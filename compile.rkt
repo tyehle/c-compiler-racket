@@ -24,12 +24,12 @@
 
 (define (format-srcloc name file)
   (match/values (port-next-location file)
-                [(#f #f n) (format "file ~a, byte ~a" name n)]
-                [(line col _) (format "file ~a, line ~a, col ~a" name line col)]))
+                [(#f #f n) (format "~a:~a" name n)]
+                [(line col _) (format "~a:~a:~a" name line col)]))
 
 (define (format-loc span)
   (match span
-    [(source-span name line col _ _) (format "file ~a, line ~a, col ~a" name line col)]))
+    [(source-span name line col _ _) (format "~a:~a:~a" name line col)]))
 
 
 (define (concat-srclocs loc-start loc-end)
@@ -41,12 +41,52 @@
 (define (rcc-compile input-file mode assembly-file)
   (let* ([tokens (delay (lex input-file))]
          [ast (delay (parse (force tokens)))]
-         [assembly (delay (assemble (force ast)))])
+         [tacky-ir (delay (gen-tacky (force ast)))]
+         [assembly (delay (assemble (force tacky-ir)))])
     (match mode
       ['lex (pretty-print (force tokens))]
       ['parse (pretty-print (force ast))]
+      ['tacky (pretty-print (force tacky-ir))]
       ['codegen (pretty-print (force assembly))]
       [(or 'assemble 'full) (emit-assembly (force assembly) assembly-file)])))
+
+
+(define (walk-tree fn tree)
+  ; (debug 'walk-tree tree)
+  (match tree
+    [(? list?) (map fn tree)]
+
+    [(program def loc) (program (fn def) loc)]
+
+    ; functions can contain either a single statement or a list of instructions
+    [(function name (list body-parts ...) loc) (function name (map fn body-parts) loc)]
+    [(function name body loc) (function name (fn body) loc)]
+
+    [(statement `(return ,expr) loc) (statement `(return ,(fn expr)) loc)]
+
+    [(expr `(negate ,sub-expr) loc) (expr `(negate ,(fn sub-expr)) loc)]
+    [(expr `(complement ,sub-expr) loc) (expr `(complement ,(fn sub-expr)) loc)]
+    [(expr `(int ,_) _) tree]
+
+    [(instruction `(negate ,op ,dest) loc) (instruction `(negate ,(fn op) ,(fn dest)) loc)]
+    [(instruction `(complement ,op ,dest) loc) (instruction `(complement ,(fn op) ,(fn dest)) loc)]
+    [(instruction `(return ,val) loc) (instruction `(return ,(fn val)) loc)]
+
+    [(instruction `(mov ,what ,where) loc) (instruction `(mov ,(fn what) ,(fn where)) loc)]
+    [(instruction `(neg ,what) loc) (instruction `(neg ,(fn what)) loc)]
+    [(instruction `(not ,what) loc) (instruction `(not ,(fn what)) loc)]
+    [(instruction `(allocate-stack ,_) loc) tree]
+    [(instruction `(ret) _) tree]
+
+    [(operand _ _) tree]))
+
+
+(define ((top-down fn) tree)
+  (walk-tree (top-down fn) (fn tree)))
+
+
+(define ((bottom-up fn) tree)
+  (fn (walk-tree (bottom-up fn) tree)))
 
 
 (define (lex input-file-name)
@@ -67,26 +107,25 @@
       (cond
         [(regexp-try-match #px"^\\s+" in) (go)]
 
-        [(regexp-try-match #px"^[a-zA-Z_]\\w*\\b" in)
-         => (decode-match 'ident start)]
+        [(regexp-try-match #px"^[a-zA-Z_]\\w*\\b" in) => (decode-match 'ident start)]
 
-        [(regexp-try-match #px"^[0-9]+\\b" in)
-         => (decode-match 'const start)]
+        [(regexp-try-match #px"^[0-9]+\\b" in) => (decode-match 'const start)]
 
-        [(regexp-try-match #px"^\\(" in)
-         => (decode-match 'lparen start)]
+        [(regexp-try-match #px"^--" in) => (decode-match 'decrement start)]
 
-        [(regexp-try-match #px"^\\)" in)
-         => (decode-match 'rparen start)]
+        [(regexp-try-match #px"^-" in) => (decode-match 'negate start)]
 
-        [(regexp-try-match #px"^\\{" in)
-         => (decode-match 'lbrace start)]
+        [(regexp-try-match #px"^~" in) => (decode-match 'complement start)]
 
-        [(regexp-try-match #px"^\\}" in)
-         => (decode-match 'rbrace start)]
+        [(regexp-try-match #px"^\\(" in) => (decode-match 'lparen start)]
 
-        [(regexp-try-match #px"^\\;" in)
-         => (decode-match 'semicolon start)]
+        [(regexp-try-match #px"^\\)" in) => (decode-match 'rparen start)]
+
+        [(regexp-try-match #px"^\\{" in) => (decode-match 'lbrace start)]
+
+        [(regexp-try-match #px"^\\}" in) => (decode-match 'rbrace start)]
+
+        [(regexp-try-match #px"^\\;" in) => (decode-match 'semicolon start)]
 
         [(eq? (peek-char in) eof) '()]
 
@@ -105,17 +144,20 @@
        [t t])
      tokens))
 
-  (define (replace-ints tokens)
-    (map
-     (match-lambda
-       [(token 'const str loc) (token 'const (string->number str) loc)]
-       [t t])
-     tokens))
-
-  (replace-ints (replace-keywords (go))))
+  (replace-keywords (go)))
 
 
 (define (parse tokens)
+  (define (next-token-loc-str tokens)
+    (match tokens
+      ['() "EOF"]
+      [(cons (token _ _ loc) _) (format-loc loc)]))
+
+  (define (next-token-value tokens)
+    (match tokens
+      ['() "EOF"]
+      [(cons (token _ value _) _) value]))
+
   (define ((parse-sequence . parsers) tokens)
     (match parsers
       ['() (cons '() tokens)]
@@ -152,10 +194,48 @@
         value
         actual-value)]))
 
+  (define ((peek-alternative name options) tokens)
+    (define (peek? pats tokens)
+      (match (cons pats tokens)
+        [(cons '() _) #t]
+        [(cons _ '()) #f]
+        [(cons (cons (? symbol? pat) pats) (cons (token kind _ _) tokens))
+         (and (equal? pat kind) (peek? pats tokens))]
+        [(cons (cons (cons kind value) pats) (cons t tokens))
+         (and (equal? kind (token-kind t)) (equal? value (token-value t)) (peek? pats tokens))]))
+    (match (force options) ; options must be lazy to allow self reference
+      ['() (raise-user-error 'error
+                             "~a parser: Expected ~a but found ~a"
+                             (next-token-loc-str tokens)
+                             name
+                             (next-token-value tokens))]
+      [(cons (cons pats parser) rst)
+       (if (peek? pats tokens)
+           (parser tokens)
+           ((peek-alternative name rst) tokens))]))
+
   (define parse-expr
-    (map/p
-     (λ (t) (expr `(int ,(token-value t)) (token-loc t)))
-     (expect-kind 'const)))
+    (peek-alternative "expression"
+                      (delay
+                        (list
+                         (cons '(const)
+                               (map/p (match-lambda [(token _ value loc)
+                                                     (expr `(int ,(string->number value))
+                                                           loc)])
+                                      (expect-kind 'const)))
+                         (cons '(negate)
+                               (map/p (match-lambda [(list t e)
+                                                     (expr `(negate ,e)
+                                                           (concat-srclocs (token-loc t) (expr-loc e)))])
+                                      (parse-sequence (expect-kind 'negate) parse-expr)))
+                         (cons '(complement)
+                               (map/p (match-lambda [(list t e)
+                                                     (expr `(complement ,e)
+                                                           (concat-srclocs (token-loc t) (expr-loc e)))])
+                                      (parse-sequence (expect-kind 'complement) parse-expr)))
+                         (cons '(lparen)
+                               (map/p (match-lambda [(list _ e _) e])
+                                      (parse-sequence (expect-kind 'lparen) parse-expr (expect-kind 'rparen))))))))
 
   (define parse-statement
     (map/p
@@ -190,49 +270,121 @@
      (raise-user-error 'error "~a: paser: Expected eof, but found ~a ~a" (format-loc loc) kind value)]))
 
 
-(define (assemble ast)
-  (define (assemble-expr e)
-    (match e
-      [(expr `(int ,value) loc) (operand `(imm ,value) loc)]))
+(define next-tacky-var 0)
+(define (fresh-tacky-tmp-var loc)
+  (let ([name (format "tmp.~a" next-tacky-var)])
+    (set! next-tacky-var (add1 next-tacky-var))
+    (operand `(var ,name) loc)))
 
-  (define (assemble-statement s)
-    (match s
-      [(statement `(return ,expr) loc)
-       (list (instruction `(mov ,(assemble-expr expr) ,(operand `(reg eax) loc)) loc)
-             (instruction '(ret) loc))]))
 
-  (define (assemble-function fn)
-    (match-let ([(function name body loc) fn])
-      (function name (assemble-statement body) loc)))
+(define gen-tacky
+  (local [(define (unary? expr-kind)
+            (member expr-kind '(negate complement)))]
+    (bottom-up (match-lambda
+                 [(expr `(int ,n) loc) (list (operand `(imm ,n) loc))]
+                 [(expr `(,(? unary? kind) (,op ,@instructions)) loc)
+                  (let* ([dest (fresh-tacky-tmp-var loc)]
+                         [instr (instruction (list kind op dest) loc)])
+                    (cons dest (cons instr instructions)))]
+                 [(statement `(return (,(? operand? v) ,@instructions)) loc)
+                  (reverse (cons (instruction `(return ,v) loc) instructions))]
+                 [x x]))))
 
-  (define (assemble-program p)
-    (match-let ([(program fn loc) p])
-      (program (assemble-function fn) loc)))
 
-  (assemble-program ast))
+(define (assemble tacky)
+  (define (unary? kind) (member kind '(negate complement)))
+
+  (define convert-instruction-kind
+    (match-lambda
+      ['complement 'not]
+      ['negate 'neg]))
+
+  (define flatten-instruction-list
+    (match-lambda
+      ['() '()]
+      [(cons (and fst `(,(? symbol?) ,@_)) rst) (cons fst (flatten-instruction-list rst))]
+      [(cons (? instruction? fst) rst) (cons fst (flatten-instruction-list rst))]
+      [(cons fst rst) (append (flatten-instruction-list fst) (flatten-instruction-list rst))]))
+
+  (define rewrite-operators
+    (bottom-up (match-lambda
+                 [(instruction `(return ,op) loc)
+                  (list (instruction `(mov ,op ,(operand `(reg AX) loc)) loc)
+                        (instruction `(ret) loc))]
+                 [(instruction `(,(? unary? kind) ,src ,dst) loc)
+                  (list (instruction `(mov ,src ,dst) loc)
+                        (instruction `(,(convert-instruction-kind kind) ,dst) loc))]
+                 [(function name is loc) (function name (flatten-instruction-list is) loc)]
+                 [x x])))
+
+  (define stack-offset 0)
+  (define (next-stack-offset)
+    (set! stack-offset (+ 4 stack-offset))
+    stack-offset)
+  (define var-map (make-hash))
+  (define replace-vars
+    (bottom-up (match-lambda
+                 [(operand `(var ,name) loc)
+                  (let ([offset (hash-ref! var-map name next-stack-offset)])
+                    (operand `(stack ,offset) loc))]
+                 [(function name is loc)
+                  (let ([res (function name (cons (instruction `(allocate-stack ,stack-offset) loc) is) loc)])
+                    (set! stack-offset 0)
+                    res)]
+                 [x x])))
+
+  (define (stack? op) (equal? 'stack (car (operand-value op))))
+  (define fix-invalid-movs
+    (bottom-up (match-lambda
+                 [(instruction `(mov ,(? stack? src) ,(? stack? dst)) loc)
+                  (let ([tmp-reg (operand `(reg R10) loc)])
+                    (list (instruction `(mov ,src ,tmp-reg) loc)
+                          (instruction `(mov ,tmp-reg ,dst) loc)))]
+                 [(function name is loc) (function name (flatten-instruction-list is) loc)]
+                 [x x])))
+
+  (fix-invalid-movs (replace-vars (rewrite-operators tacky))))
 
 
 (define (emit-assembly ast output-file)
-  (define (emit-operand o)
+  (define (operand->string o)
     (match o
-      [(operand `(reg ,name) _) (printf "%~a" name)]
-      [(operand `(imm ,value) _) (printf "$~a" value)]))
+      [(operand `(reg AX) _) "%eax"]
+      [(operand `(reg R10) _) "%r10d"]
+      [(operand `(stack ,n) _) (format "-~a(%rbp)" n)]
+      [(operand `(imm ,value) _) (format "$~a" value)]))
+
+  (define (ikind->string s)
+    (match s
+      ['mov "movl"]
+      ['neg "negl"]
+      ['not "notl"]))
+
+  (define (emit-binop op a b)
+    (printf "    ~a ~a, ~a\n" op a b))
+
+  (define (emit-unop op a)
+    (printf "    ~a ~a\n" op a))
 
   (define (emit-instruction i)
     (match i
-      [(instruction `(mov ,what ,where) _)
-       (display "    movl ")
-       (emit-operand what)
-       (display ", ")
-       (emit-operand where)
-       (display "\n")]
+      [(instruction `(allocate-stack ,n) _)
+       (emit-binop "subq" (format "$~a" n) "%rsp")]
       [(instruction `(ret) _)
-       (display "    ret\n")]))
+       (emit-binop "movq" "%rbp" "%rsp")
+       (emit-unop "popq" "%rbp")
+       (display "    ret\n")]
+      [(instruction `(,op ,src ,dst) _)
+       (emit-binop (ikind->string op) (operand->string src) (operand->string dst))]
+      [(instruction `(,op ,value) _)
+       (emit-unop (ikind->string op) (operand->string value))]))
 
   (define (emit-function fn)
     (match-let ([(function src-name body _) fn])
       (let ([name (string-append "_" src-name)])
         (printf "    .globl ~a\n~a:\n" name name)
+        (emit-unop "pushq" "%rbp")
+        (emit-binop "movq" "%rsp" "%rbp")
         (for ([i body])
           (emit-instruction i)))))
 

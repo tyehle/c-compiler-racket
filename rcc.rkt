@@ -11,16 +11,19 @@
     #:program "rcc"
     #:once-any
     [("--lex")
-      "Run the lexer and stop before parsing"
+      "Convert to tokens and print"
       (mode 'lex)]
     [("--parse")
-      "Run the lexer and the parser and stop before assembly generation"
+      "Convert to parse tree and print"
       (mode 'parse)]
+    [("--tacky")
+      "Convert to TACKY IR and print"
+      (mode 'tacky)]
     [("--codegen")
-      "Run the lexer, parser, and assembler and stop before code emmision"
+      "Convert to assembly tree and print"
       (mode 'codegen)]
     [("-S" "--assemble")
-      "Run the full compiler and stop before linking"
+      "Run the full compiler write an assembly file"
       (mode 'assemble)]
     #:args (filename)
     (if (string-suffix? filename ".c")

@@ -1,3 +1,4 @@
 programs/*
 !programs/*.c
 *.pdf
+*.rkt~
