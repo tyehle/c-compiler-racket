@@ -7,7 +7,7 @@
 
 
 (define (debug label v)
-  (printf "~a" label)
+  (printf "\n~a\n" label)
   (pretty-print v)
   v)
 
@@ -21,10 +21,16 @@
                      [(span name line col _ _) (format "~a:~a:~a" name line col)]))
 
 
-(define (concat-srclocs loc-start loc-end)
-  (match-let ([(span path start-line start-col _ _) loc-start]
-              [(span _ _ _ end-line end-col) loc-end])
-    (span path start-line start-col end-line end-col)))
+(define (join-locs a b)
+  (match (cons a b)
+    [`((,@_ ,(span path start-line start-col _ _)) . (,@_ ,(span _ _ _ end-line end-col)))
+     (span path start-line start-col end-line end-col)]))
+
+
+(define (member? x xs)
+  (match xs
+    ['() #f]
+    [(cons fst rst) (or (equal? fst x) (member? x rst))]))
 
 
 (define (rcc-compile input-file mode assembly-file)
@@ -88,6 +94,14 @@
 
         [(regexp-try-match #px"^-" in) => (decode-match 'negate start)]
 
+        [(regexp-try-match #px"^\\+" in) => (decode-match 'add start)]
+
+        [(regexp-try-match #px"^\\*" in) => (decode-match 'multiply start)]
+
+        [(regexp-try-match #px"^/" in) => (decode-match 'divide start)]
+
+        [(regexp-try-match #px"^%" in) => (decode-match 'remainder start)]
+
         [(regexp-try-match #px"^~" in) => (decode-match 'complement start)]
 
         [(regexp-try-match #px"^\\(" in) => (decode-match 'lparen start)]
@@ -112,7 +126,7 @@
     (map
      (match-lambda
        [`(ident ,v ,loc)
-        #:when (member v '("int" "void" "return"))
+        #:when (member? v '("int" "void" "return"))
         `(keyword ,(string->symbol v) ,loc)]
        [t t])
      tokens))
@@ -167,6 +181,11 @@
         value
         actual-value)]))
 
+  (define (any-token tokens)
+    (match tokens
+      ['() (raise-user-error 'error "parser: Expected token, but reached end of input")]
+      [_ tokens]))
+
   (define ((peek-alternative name options) tokens)
     (define (peek? pats tokens)
       (match (cons pats tokens)
@@ -175,7 +194,8 @@
         [`((,(? symbol? pat) ,@pats) . ((,kind ,_ ,_) ,@tokens))
          (and (equal? pat kind) (peek? pats tokens))]
         [`(((,kind . ,value) ,@pats) . ((,k ,v ,_) ,@tokens))
-         (and (equal? kind k) (equal? value v) (peek? pats tokens))]))
+         (and (equal? kind k) (equal? value v) (peek? pats tokens))]
+        [`((,pat ,@pats) . (,t ,@tokens)) (and (pat t) (peek? pats tokens))]))
     (match (force options) ; options must be lazy to allow self reference
       ['() (raise-user-error 'error
                              "~a parser: Expected ~a but found ~a"
@@ -187,42 +207,65 @@
            (parser tokens)
            ((peek-alternative name rst) tokens))]))
 
-  (define parse-expr
+  (define ((is-kind? . ks) tok)
+    (match ks
+      ['() #f]
+      [(cons k rst) (or (equal? k (first tok)) ((apply is-kind? rst) tok))]))
+
+  (define parse-factor
     (peek-alternative "expression"
                       (delay
                         (list
-                         (cons '(const)
+                         (cons (list (is-kind? 'const))
                                (map/p (match-lambda [`(const ,value ,loc)
                                                      `(int ,(string->number value) ,loc)])
-                                      (expect-kind 'const)))
-                         (cons '(negate)
-                               (map/p (match-lambda [`((negate ,_ ,t-loc) ,(and e `(,@_ ,e-loc)))
-                                                     (let ([loc (concat-srclocs t-loc e-loc)])
-                                                       `(negate ,e ,loc))])
-                                      (parse-sequence (expect-kind 'negate) parse-expr)))
-                         (cons '(complement)
-                               (map/p (match-lambda [`((complement ,_ ,t-loc) ,(and e `(,@_ ,e-loc)))
-                                                     (let ([loc (concat-srclocs t-loc e-loc)])
-                                                       `(complement ,e ,loc))])
-                                      (parse-sequence (expect-kind 'complement) parse-expr)))
-                         (cons '(lparen)
+                                      any-token))
+                         (cons (list (is-kind? 'complement 'negate))
+                               (map/p (match-lambda [`(,(and tok `(,kind ,_ ,_)) ,e)
+                                                     (let ([loc (join-locs tok e)])
+                                                       `(,kind ,e ,loc))])
+                                      (parse-sequence any-token parse-factor)))
+                         (cons (list (is-kind? 'lparen))
                                (map/p (match-lambda [(list _ e _) e])
-                                      (parse-sequence (expect-kind 'lparen)
-                                                      parse-expr
+                                      (parse-sequence any-token
+                                                      (parse-expr 0)
                                                       (expect-kind 'rparen))))))))
+
+  (define ((parse-expr min-prec) t1)
+    (define precedence (hash 'multiply 50
+                             'divide 50
+                             'remainder 50
+                             'add 45
+                             'negate 45))
+
+    (define (valid-operator? token)
+      ((hash-ref precedence (first token) -1) . >= . min-prec))
+
+    (define ((rec left) t1)
+      (match t1
+        [(cons (? valid-operator? op-token) t2)
+         (match-let* ([`(,op ,_ ,_) op-token]
+                      [op-prec (hash-ref precedence op)]
+                      [(cons right t3) ((parse-expr (+ 1 op-prec)) t2)]
+                      [new-left `(,op ,left ,right ,(join-locs left right))])
+           ((rec new-left) t3))]
+        [_ (cons left t1)]))
+
+    (match-let ([(cons left t2) (parse-factor t1)])
+      ((rec left) t2)))
 
   (define parse-statement
     (map/p
      (match-lambda
-       [`((,_ ,_ ,loc-start) ,expr (,_ ,_ ,loc-end))
-        `(return ,expr ,(concat-srclocs loc-start loc-end))])
-     (parse-sequence (expect 'keyword 'return) parse-expr (expect-kind 'semicolon))))
+       [`(,start ,expr ,end)
+        `(return ,expr ,(join-locs start end))])
+     (parse-sequence (expect 'keyword 'return) (parse-expr 0) (expect-kind 'semicolon))))
 
   (define parse-function
     (map/p
      (match-lambda
-       [`((,_ ,_ ,loc-start) (ident ,name ,_) ,@_..4 ,body (,_ ,_ ,loc-end))
-        `(function ,name ,body ,(concat-srclocs loc-start loc-end))])
+       [`(,start (ident ,name ,_) ,@_..4 ,body ,end)
+        `(function ,name ,body ,(join-locs start end))])
      (parse-sequence
       (expect 'keyword 'int)
       (expect-kind 'ident)
@@ -238,7 +281,12 @@
      (match-lambda [(and f `(function ,_ ,_ ,loc)) `(program ,f ,loc)])
      parse-function))
 
-  (match (parse-program tokens)
+  (define rename-subtract
+    (bottom-up (match-lambda
+                 [`(negate ,a ,b ,loc) `(subtract ,a ,b ,loc)]
+                 [x x])))
+
+  (match (rename-subtract (parse-program tokens))
     [(cons prog '()) prog]
     [(cons _ `((,kind ,value ,loc) ,@_))
      (raise-user-error 'error "~a: paser: Expected eof, but found ~a ~a" (format-loc loc) kind value)]))
@@ -253,34 +301,58 @@
 
 (define gen-tacky
   (local [(define (unary? expr-kind)
-            (member expr-kind '(negate complement)))]
+            (member? expr-kind '(negate complement)))
+          (define (binary? expr-kind)
+            (member? expr-kind '(add subtract multiply divide remainder)))]
     (bottom-up (match-lambda
                  [`(int ,n ,loc) (list `(imm ,n ,loc))]
-                 [`(,(? unary? kind) (,op ,@instructions) ,loc)
+                 [`(,(? unary? kind) (,operand ,@instructions) ,loc)
                   (let* ([dest (fresh-tacky-tmp-var loc)]
-                         [instr `(,kind ,op ,dest ,loc)])
+                         [instr `(,kind ,operand ,dest ,loc)])
                     (cons dest (cons instr instructions)))]
                  [`(return (,v ,@instructions) ,loc)
                   (reverse (cons `(return ,v ,loc) instructions))]
+                 [`(,(? binary? kind) (,a ,@a-instrs) (,b ,@b-instrs) ,loc)
+                  (let* ([dest (fresh-tacky-tmp-var loc)]
+                         [instr `(,kind ,a ,b ,dest ,loc)])
+                    (cons dest (cons instr (append a-instrs b-instrs))))]
                  [x x]))))
 
 
 (define (assemble tacky)
-  (define (unary? kind) (member kind '(negate complement)))
+  (define (unary? kind) (member? kind '(negate complement)))
+  (define (standard-binary? kind) (member? kind '(add subtract multiply)))
 
   (define convert-instruction-kind
     (match-lambda
       ['complement 'not]
-      ['negate 'neg]))
+      ['negate 'neg]
+      ['add 'add]
+      ['subtract 'sub]
+      ['multiply 'imul]
+      ['divide 'idiv]))
 
   (define rewrite-operators
     (bottom-up (match-lambda
                  [`(return ,op ,loc)
-                  (list `(mov ,op (reg AX ,loc) ,loc)
-                        `(ret, loc))]
+                  `((mov ,op (reg AX ,loc) ,loc)
+                    (ret, loc))]
                  [`(,(? unary? kind) ,src ,dst ,loc)
-                  (list `(mov ,src ,dst ,loc)
-                        `(,(convert-instruction-kind kind) ,dst ,loc))]
+                  `((mov ,src ,dst ,loc)
+                    (,(convert-instruction-kind kind) ,dst ,loc))]
+                 [`(,(? standard-binary? kind) ,a ,b ,dst ,loc)
+                  `((mov ,a ,dst ,loc)
+                    (,(convert-instruction-kind kind) ,b ,dst ,loc))]
+                 [`(divide ,a ,b ,dst ,loc)
+                  `((mov ,a (reg AX ,loc) ,loc)
+                    (cdq ,loc)
+                    (idiv ,b ,loc)
+                    (mov (reg AX ,loc) ,dst ,loc))]
+                 [`(remainder ,a ,b ,dst ,loc)
+                  `((mov ,a (reg AX ,loc) ,loc)
+                    (cdq ,loc)
+                    (idiv ,b ,loc)
+                    (mov (reg DX ,loc) ,dst ,loc))]
                  [x x])))
 
   (define stack-offset 0)
@@ -300,12 +372,22 @@
                  [x x])))
 
   (define (stack? op) (equal? 'stack (car op)))
+  (define ((kind? . ks) actual) (member? actual ks))
   (define fix-invalid-movs
     (bottom-up (match-lambda
-                 [`(mov ,(? stack? src) ,(? stack? dst) ,loc)
-                  (let ([tmp-reg `(reg R10 ,loc)])
-                    (list `(mov ,src ,tmp-reg ,loc)
-                          `(mov ,tmp-reg ,dst ,loc)))]
+                 ; idiv cannot operate on a constant
+                 [`(idiv ,(and val `(imm ,_ ,_)) ,loc)
+                  `((mov ,val (reg R10 ,loc) ,loc)
+                    (idiv (reg R10 ,loc) ,loc))]
+                 ; imul can't use an address as its destination
+                 [`(imul ,src ,(? stack? dst) ,loc)
+                  `((mov ,dst (reg R11 ,loc) ,loc)
+                    (imul ,src (reg R11 ,loc) ,loc)
+                    (mov (reg R11 ,loc) ,dst ,loc))]
+                 ; mov, add, and sub cannot operate on two addresses
+                 [`(,(? (kind? 'mov 'add 'sub) kind) ,(? stack? src) ,(? stack? dst) ,loc)
+                  `((mov ,src (reg R10 ,loc) ,loc)
+                    (,kind (reg R10 ,loc) ,dst ,loc))]
                  [x x])))
 
   (fix-invalid-movs (replace-vars (rewrite-operators tacky))))
@@ -315,14 +397,20 @@
   (define (operand->string o)
     (match o
       [`(reg AX ,_) "%eax"]
+      [`(reg DX ,_) "%edx"]
       [`(reg R10 ,_) "%r10d"]
+      [`(reg R11 ,_) "%r11d"]
       [`(stack ,n ,_) (format "-~a(%rbp)" n)]
       [`(imm ,value ,_) (format "$~a" value)]))
 
   (define instruction-map
     (hash 'mov "movl"
           'neg "negl"
-          'not "notl"))
+          'not "notl"
+          'add "addl"
+          'sub "subl"
+          'imul "imull"
+          'idiv "idivl"))
   (define (instruction? i) (dict-has-key? instruction-map i))
   (define (instruction->string i) (dict-ref instruction-map i))
 
@@ -350,6 +438,8 @@
        (emit-binop "movq" "%rbp" "%rsp")
        (emit-unop "popq" "%rbp")
        (display "    ret\n")]
+      [`(cdq ,_)
+       (display "    cdq\n")]
       [`(,(? instruction? op) ,src ,dst ,_)
        (emit-binop (instruction->string op) (operand->string src) (operand->string dst))]
       [`(,(? instruction? op) ,value ,_)
@@ -359,4 +449,4 @@
 
 
 (module+ main
-  (rcc-compile "programs/return_2.c" 'tacky "programs/return_2.s"))
+  (rcc-compile "programs/return_2.c" 'assemble "programs/return_2.s"))
