@@ -2,3 +2,4 @@ programs/*
 !programs/*.c
 *.pdf
 *.rkt~
+compiled/
