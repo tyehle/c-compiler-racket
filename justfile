@@ -16,4 +16,4 @@ codegen path: (partial-compile "--codegen" path)
 assemble path: (partial-compile "--assemble" path)
 
 test chapter stage="run":
-    arch -x86_64 zsh -c './writing-a-c-compiler-tests/test_compiler ./rcc.rkt --chapter={{chapter}} --stage={{stage}}'
+    arch -x86_64 zsh -c './writing-a-c-compiler-tests/test_compiler ./rcc.rkt --bitwise --chapter={{chapter}} --stage={{stage}}'

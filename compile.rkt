@@ -102,7 +102,17 @@
 
         [(regexp-try-match #px"^%" in) => (decode-match 'remainder start)]
 
+        [(regexp-try-match #px"^<<" in) => (decode-match 'lshift start)]
+
+        [(regexp-try-match #px"^>>" in) => (decode-match 'rshift start)]
+
         [(regexp-try-match #px"^~" in) => (decode-match 'complement start)]
+
+        [(regexp-try-match #px"^&" in) => (decode-match 'and start)]
+
+        [(regexp-try-match #px"^\\|" in) => (decode-match 'or start)]
+
+        [(regexp-try-match #px"^\\^" in) => (decode-match 'xor start)]
 
         [(regexp-try-match #px"^\\(" in) => (decode-match 'lparen start)]
 
@@ -236,7 +246,12 @@
                              'divide 50
                              'remainder 50
                              'add 45
-                             'negate 45))
+                             'negate 45
+                             'lshift 42
+                             'rshift 42
+                             'and 35
+                             'xor 34
+                             'or 33))
 
     (define (valid-operator? token)
       ((hash-ref precedence (first token) -1) . >= . min-prec))
@@ -297,13 +312,11 @@
   (let ([name (format "tmp.~a" next-tacky-var)])
     (set! next-tacky-var (add1 next-tacky-var))
     `(var ,name ,loc)))
-
-
 (define gen-tacky
   (local [(define (unary? expr-kind)
             (member? expr-kind '(negate complement)))
           (define (binary? expr-kind)
-            (member? expr-kind '(add subtract multiply divide remainder)))]
+            (member? expr-kind '(add subtract multiply divide remainder lshift rshift and xor or)))]
     (bottom-up (match-lambda
                  [`(int ,n ,loc) (list `(imm ,n ,loc))]
                  [`(,(? unary? kind) (,operand ,@instructions) ,loc)
@@ -321,7 +334,7 @@
 
 (define (assemble tacky)
   (define (unary? kind) (member? kind '(negate complement)))
-  (define (standard-binary? kind) (member? kind '(add subtract multiply)))
+  (define (standard-binary? kind) (member? kind '(add subtract multiply lshift rshift and xor or)))
 
   (define convert-instruction-kind
     (match-lambda
@@ -330,7 +343,12 @@
       ['add 'add]
       ['subtract 'sub]
       ['multiply 'imul]
-      ['divide 'idiv]))
+      ['divide 'idiv]
+      ['lshift 'sal]
+      ['rshift 'sar]
+      ['and 'and]
+      ['xor 'xor]
+      ['or 'or]))
 
   (define rewrite-operators
     (bottom-up (match-lambda
@@ -384,8 +402,12 @@
                   `((mov ,dst (reg R11 ,loc) ,loc)
                     (imul ,src (reg R11 ,loc) ,loc)
                     (mov (reg R11 ,loc) ,dst ,loc))]
-                 ; mov, add, and sub cannot operate on two addresses
-                 [`(,(? (kind? 'mov 'add 'sub) kind) ,(? stack? src) ,(? stack? dst) ,loc)
+                 ; shift op count arg cannot be an address
+                 [`(,(? (kind? 'sar 'sal) kind) ,(? stack? how-many) ,what ,loc)
+                  `((mov ,how-many (reg CX ,loc) ,loc)
+                    (,kind (reg CL ,loc) ,what ,loc))]
+                 ; mov, add, sub, and, or, and xor cannot operate on two addresses
+                 [`(,(? (kind? 'mov 'add 'sub 'and 'or 'xor) kind) ,(? stack? src) ,(? stack? dst) ,loc)
                   `((mov ,src (reg R10 ,loc) ,loc)
                     (,kind (reg R10 ,loc) ,dst ,loc))]
                  [x x])))
@@ -397,6 +419,8 @@
   (define (operand->string o)
     (match o
       [`(reg AX ,_) "%eax"]
+      [`(reg CL ,_) "%cl"]
+      [`(reg CX, _) "%ecx"]
       [`(reg DX ,_) "%edx"]
       [`(reg R10 ,_) "%r10d"]
       [`(reg R11 ,_) "%r11d"]
@@ -410,7 +434,12 @@
           'add "addl"
           'sub "subl"
           'imul "imull"
-          'idiv "idivl"))
+          'idiv "idivl"
+          'sar "sarl"
+          'sal "sall"
+          'and "andl"
+          'xor "xorl"
+          'or "orl"))
   (define (instruction? i) (dict-has-key? instruction-map i))
   (define (instruction->string i) (dict-ref instruction-map i))
 
@@ -449,4 +478,4 @@
 
 
 (module+ main
-  (rcc-compile "programs/return_2.c" 'assemble "programs/return_2.s"))
+  (rcc-compile "programs/return_2.i" 'assemble "programs/return_2.s"))
