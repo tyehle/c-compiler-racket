@@ -402,10 +402,10 @@
                   `((mov ,dst (reg R11 ,loc) ,loc)
                     (imul ,src (reg R11 ,loc) ,loc)
                     (mov (reg R11 ,loc) ,dst ,loc))]
-                 ; shift op count arg cannot be an address
+                 ; shift op count arg cannot be an address & the
                  [`(,(? (kind? 'sar 'sal) kind) ,(? stack? how-many) ,what ,loc)
                   `((mov ,how-many (reg CX ,loc) ,loc)
-                    (,kind (reg CL ,loc) ,what ,loc))]
+                    (,kind (reg CX 1 ,loc) ,what ,loc))]
                  ; mov, add, sub, and, or, and xor cannot operate on two addresses
                  [`(,(? (kind? 'mov 'add 'sub 'and 'or 'xor) kind) ,(? stack? src) ,(? stack? dst) ,loc)
                   `((mov ,src (reg R10 ,loc) ,loc)
@@ -418,8 +418,10 @@
 (define (emit-assembly ast output-file)
   (define (operand->string o)
     (match o
+      ; typed register. There is only one for now so we can support shifts
+      [`(reg CX 1 ,_) "%cl"]
+      ; untyped registers
       [`(reg AX ,_) "%eax"]
-      [`(reg CL ,_) "%cl"]
       [`(reg CX, _) "%ecx"]
       [`(reg DX ,_) "%edx"]
       [`(reg R10 ,_) "%r10d"]
