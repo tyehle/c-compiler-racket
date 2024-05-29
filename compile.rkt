@@ -17,6 +17,7 @@
                 [(#f #f n) (format "~a:~a" name n)]
                 [(line col _) (format "~a:~a:~a" name line col)]))
 
+
 (define format-loc (match-lambda
                      [(span name line col _ _) (format "~a:~a:~a" name line col)]))
 
@@ -31,6 +32,10 @@
   (match xs
     ['() #f]
     [(cons fst rst) (or (equal? fst x) (member? x rst))]))
+
+
+(define ((contains? . xs) x)
+  (member? x xs))
 
 
 (define (rcc-compile input-file mode assembly-file)
@@ -77,7 +82,6 @@
                   [(row col _) (port-next-location in)]
                   [(loc) (span input-file-name (car start) (cdr start) row col)]
                   [(decoded) (list symb value loc)])
-      ; (println decoded)
       (cons decoded (go))))
 
   (define (go)
@@ -92,36 +96,39 @@
 
         [(regexp-try-match #px"^--" in) => (decode-match 'decrement start)]
 
-        [(regexp-try-match #px"^-" in) => (decode-match 'negate start)]
-
+        ; arithmetic operators
+        [(regexp-try-match #px"^-" in)   => (decode-match 'negate start)]
         [(regexp-try-match #px"^\\+" in) => (decode-match 'add start)]
-
         [(regexp-try-match #px"^\\*" in) => (decode-match 'multiply start)]
+        [(regexp-try-match #px"^/" in)   => (decode-match 'divide start)]
+        [(regexp-try-match #px"^%" in)   => (decode-match 'remainder start)]
 
-        [(regexp-try-match #px"^/" in) => (decode-match 'divide start)]
+        ; shift operators
+        [(regexp-try-match #px"^>>" in)  => (decode-match 'rshift start)]
+        [(regexp-try-match #px"^<<" in)  => (decode-match 'lshift start)]
 
-        [(regexp-try-match #px"^%" in) => (decode-match 'remainder start)]
+        ; logical operators
+        [(regexp-try-match #px"^==" in)     => (decode-match 'equal start)]
+        [(regexp-try-match #px"^!=" in)     => (decode-match 'not-equal start)]
+        [(regexp-try-match #px"^!" in)      => (decode-match 'not start)]
+        [(regexp-try-match #px"^&&" in)     => (decode-match 'and start)]
+        [(regexp-try-match #px"^\\|\\|" in) => (decode-match 'or start)]
+        [(regexp-try-match #px"^<=" in)     => (decode-match 'less-or-equal start)]
+        [(regexp-try-match #px"^>=" in)     => (decode-match 'greater-or-equal start)]
+        [(regexp-try-match #px"^<" in)      => (decode-match 'less-than start)]
+        [(regexp-try-match #px"^>" in)      => (decode-match 'greater-than start)]
 
-        [(regexp-try-match #px"^<<" in) => (decode-match 'lshift start)]
+        ; bitwise operators
+        [(regexp-try-match #px"^~" in)   => (decode-match 'complement start)]
+        [(regexp-try-match #px"^&" in)   => (decode-match 'bitwise-and start)]
+        [(regexp-try-match #px"^\\|" in) => (decode-match 'bitwise-or start)]
+        [(regexp-try-match #px"^\\^" in) => (decode-match 'bitwise-xor start)]
 
-        [(regexp-try-match #px"^>>" in) => (decode-match 'rshift start)]
-
-        [(regexp-try-match #px"^~" in) => (decode-match 'complement start)]
-
-        [(regexp-try-match #px"^&" in) => (decode-match 'and start)]
-
-        [(regexp-try-match #px"^\\|" in) => (decode-match 'or start)]
-
-        [(regexp-try-match #px"^\\^" in) => (decode-match 'xor start)]
-
+        ; punctuation
         [(regexp-try-match #px"^\\(" in) => (decode-match 'lparen start)]
-
         [(regexp-try-match #px"^\\)" in) => (decode-match 'rparen start)]
-
         [(regexp-try-match #px"^\\{" in) => (decode-match 'lbrace start)]
-
         [(regexp-try-match #px"^\\}" in) => (decode-match 'rbrace start)]
-
         [(regexp-try-match #px"^\\;" in) => (decode-match 'semicolon start)]
 
         [(eq? (peek-char in) eof) '()]
@@ -170,7 +177,7 @@
   (define ((expect-kind kind) tokens)
     (match tokens
       ['() (raise-user-error 'error "parser: Expected ~a, but reached end of input" kind)]
-      [`((,k ,_ ,_) ,@rst) #:when (equal? k kind) tokens]
+      [`((,k ,_ ,_) ,@_) #:when (equal? k kind) tokens]
       [`((,actual-kind ,_ ,loc) ,@_)
        (raise-user-error
         'error
@@ -218,9 +225,7 @@
            ((peek-alternative name rst) tokens))]))
 
   (define ((is-kind? . ks) tok)
-    (match ks
-      ['() #f]
-      [(cons k rst) (or (equal? k (first tok)) ((apply is-kind? rst) tok))]))
+    (member? (first tok) ks))
 
   (define parse-factor
     (peek-alternative "expression"
@@ -230,7 +235,7 @@
                                (map/p (match-lambda [`(const ,value ,loc)
                                                      `(int ,(string->number value) ,loc)])
                                       any-token))
-                         (cons (list (is-kind? 'complement 'negate))
+                         (cons (list (is-kind? 'complement 'negate 'not))
                                (map/p (match-lambda [`(,(and tok `(,kind ,_ ,_)) ,e)
                                                      (let ([loc (join-locs tok e)])
                                                        `(,kind ,e ,loc))])
@@ -242,16 +247,24 @@
                                                       (expect-kind 'rparen))))))))
 
   (define ((parse-expr min-prec) t1)
-    (define precedence (hash 'multiply 50
-                             'divide 50
-                             'remainder 50
-                             'add 45
-                             'negate 45
-                             'lshift 42
-                             'rshift 42
-                             'and 35
-                             'xor 34
-                             'or 33))
+    (define precedence (hash 'multiply         50
+                             'divide           50
+                             'remainder        50
+                             'add              45
+                             'negate           45
+                             'lshift           40
+                             'rshift           40
+                             'less-than        35
+                             'less-or-equal    35
+                             'greater-than     35
+                             'greater-or-equal 35
+                             'equal            30
+                             'not-equal        30
+                             'bitwise-and      25
+                             'bitwise-xor      20
+                             'bitwise-or       15
+                             'and              10
+                             'or               5))
 
     (define (valid-operator? token)
       ((hash-ref precedence (first token) -1) . >= . min-prec))
@@ -312,11 +325,17 @@
   (let ([name (format "tmp.~a" next-tacky-var)])
     (set! next-tacky-var (add1 next-tacky-var))
     `(var ,name ,loc)))
+(define (fresh-tacky-label hint)
+  (let [(name (format "~a_~a" hint next-tacky-var))]
+    (set! next-tacky-var (add1 next-tacky-var))
+    name))
 (define gen-tacky
-  (local [(define (unary? expr-kind)
-            (member? expr-kind '(negate complement)))
-          (define (binary? expr-kind)
-            (member? expr-kind '(add subtract multiply divide remainder lshift rshift and xor or)))]
+  (let [(unary? (contains? 'negate 'complement 'not))
+        (binary? (contains? 'add 'subtract 'multiply 'divide 'remainder
+                            'equal 'not-equal
+                            'less-than 'less-or-equal 'greater-than 'greater-or-equal
+                            'lshift 'rshift
+                            'bitwise-and 'bitwise-xor 'bitwise-or))]
     (bottom-up (match-lambda
                  [`(int ,n ,loc) (list `(imm ,n ,loc))]
                  [`(,(? unary? kind) (,operand ,@instructions) ,loc)
@@ -329,12 +348,44 @@
                   (let* ([dest (fresh-tacky-tmp-var loc)]
                          [instr `(,kind ,a ,b ,dest ,loc)])
                     (cons dest (cons instr (append a-instrs b-instrs))))]
+                 [`(and (,fst-val ,@fst) (,snd-val ,@snd) ,loc)
+                  (let [(result (fresh-tacky-tmp-var loc))
+                        (false-label (fresh-tacky-label 'and_false))
+                        (end-label (fresh-tacky-label 'and_end))]
+                    `(,result
+                      (label ,end-label ,loc)
+                      (copy (imm 0 ,loc) ,result, loc)
+                      (label ,false-label ,loc)
+                      (jump ,end-label ,loc)
+                      (copy (imm 1 ,loc) ,result ,loc)
+                      (jump-if-zero ,snd-val ,false-label ,loc)
+                      ,@snd
+                      (jump-if-zero ,fst-val ,false-label ,loc)
+                      ,@fst))]
+                 [`(or (,fst-val ,@fst) (,snd-val ,@snd) ,loc)
+                  (let [(result (fresh-tacky-tmp-var loc))
+                        (true-label (fresh-tacky-label 'or_true))
+                        (end-label (fresh-tacky-label 'or_end))]
+                    `(,result
+                      (label ,end-label ,loc)
+                      (copy (imm 1 ,loc) ,result, loc)
+                      (label ,true-label ,loc)
+                      (jump ,end-label ,loc)
+                      (copy (imm 0 ,loc) ,result ,loc)
+                      (jump-if-not-zero ,snd-val ,true-label ,loc)
+                      ,@snd
+                      (jump-if-not-zero ,fst-val ,true-label ,loc)
+                      ,@fst))]
                  [x x]))))
 
 
 (define (assemble tacky)
-  (define (unary? kind) (member? kind '(negate complement)))
-  (define (standard-binary? kind) (member? kind '(add subtract multiply lshift rshift and xor or)))
+  (define unary? (contains? 'negate 'complement))
+  (define standard-binary? (contains? 'add 'subtract 'multiply 'lshift 'rshift 'bitwise-and 'bitwise-xor 'bitwise-or))
+  (define cond-jump? (contains? 'jump-if-zero 'jump-if-not-zero))
+  (define relational? (contains? 'equal 'not-equal
+                                 'less-than 'less-or-equal
+                                 'greater-than 'greater-or-equal))
 
   (define convert-instruction-kind
     (match-lambda
@@ -346,21 +397,15 @@
       ['divide 'idiv]
       ['lshift 'sal]
       ['rshift 'sar]
-      ['and 'and]
-      ['xor 'xor]
-      ['or 'or]))
+      ['bitwise-and 'bitwise-and]
+      ['bitwise-xor 'bitwise-xor]
+      ['bitwise-or 'bitwise-or]))
 
   (define rewrite-operators
     (bottom-up (match-lambda
                  [`(return ,op ,loc)
                   `((mov ,op (reg AX ,loc) ,loc)
                     (ret, loc))]
-                 [`(,(? unary? kind) ,src ,dst ,loc)
-                  `((mov ,src ,dst ,loc)
-                    (,(convert-instruction-kind kind) ,dst ,loc))]
-                 [`(,(? standard-binary? kind) ,a ,b ,dst ,loc)
-                  `((mov ,a ,dst ,loc)
-                    (,(convert-instruction-kind kind) ,b ,dst ,loc))]
                  [`(divide ,a ,b ,dst ,loc)
                   `((mov ,a (reg AX ,loc) ,loc)
                     (cdq ,loc)
@@ -371,6 +416,27 @@
                     (cdq ,loc)
                     (idiv ,b ,loc)
                     (mov (reg DX ,loc) ,dst ,loc))]
+                 [`(,(? cond-jump? kind) ,what ,where ,loc)
+                  `((cmp (imm 0 ,loc) ,what ,loc)
+                    (jmp-cc ,kind ,where ,loc))]
+                 [`(,(? relational? kind) ,left ,right ,dst ,loc)
+                  `((cmp ,right ,left ,loc)
+                    (mov (imm 0 ,loc) ,dst ,loc)
+                    (set-cc ,kind ,dst ,loc))]
+                 [`(not ,src ,dst ,loc)
+                  `((cmp (imm 0 ,loc) ,src ,loc)
+                    (mov (imm 0 ,loc) ,dst ,loc)
+                    (set-cc equal ,dst ,loc))]
+                 [`(jump ,where ,loc)
+                  `(jmp ,where ,loc)]
+                 [`(copy ,src ,dst ,loc)
+                  `(mov ,src ,dst ,loc)]
+                 [`(,(? unary? kind) ,src ,dst ,loc)
+                  `((mov ,src ,dst ,loc)
+                    (,(convert-instruction-kind kind) ,dst ,loc))]
+                 [`(,(? standard-binary? kind) ,a ,b ,dst ,loc)
+                  `((mov ,a ,dst ,loc)
+                    (,(convert-instruction-kind kind) ,b ,dst ,loc))]
                  [x x])))
 
   (define stack-offset 0)
@@ -390,7 +456,7 @@
                  [x x])))
 
   (define (stack? op) (equal? 'stack (car op)))
-  (define ((kind? . ks) actual) (member? actual ks))
+  (define (imm? op) (equal? 'imm (car op)))
   (define fix-invalid-movs
     (bottom-up (match-lambda
                  ; idiv cannot operate on a constant
@@ -402,12 +468,16 @@
                   `((mov ,dst (reg R11 ,loc) ,loc)
                     (imul ,src (reg R11 ,loc) ,loc)
                     (mov (reg R11 ,loc) ,dst ,loc))]
-                 ; shift op count arg cannot be an address & the
-                 [`(,(? (kind? 'sar 'sal) kind) ,(? stack? how-many) ,what ,loc)
+                 ; second arg to cmp can't be a constant
+                 [`(cmp ,src ,(? imm? dst) ,loc)
+                  `((mov ,dst (reg R11 ,loc) ,loc)
+                    (cmp ,src (reg R11 ,loc) ,loc))]
+                 ; shift op count arg cannot be an address & the reg it operates on must be %cl
+                 [`(,(? (contains? 'sar 'sal) kind) ,(? stack? how-many) ,what ,loc)
                   `((mov ,how-many (reg CX ,loc) ,loc)
                     (,kind (reg CX 1 ,loc) ,what ,loc))]
                  ; mov, add, sub, and, or, and xor cannot operate on two addresses
-                 [`(,(? (kind? 'mov 'add 'sub 'and 'or 'xor) kind) ,(? stack? src) ,(? stack? dst) ,loc)
+                 [`(,(? (contains? 'mov 'add 'sub 'cmp 'bitwise-and 'bitwise-or 'bitwise-xor) kind) ,(? stack? src) ,(? stack? dst) ,loc)
                   `((mov ,src (reg R10 ,loc) ,loc)
                     (,kind (reg R10 ,loc) ,dst ,loc))]
                  [x x])))
@@ -416,8 +486,8 @@
 
 
 (define (emit-assembly ast output-file)
-  (define (operand->string o)
-    (match o
+  (define operand->string
+    (match-lambda
       ; typed register. There is only one for now so we can support shifts
       [`(reg CX 1 ,_) "%cl"]
       ; untyped registers
@@ -429,6 +499,23 @@
       [`(stack ,n ,_) (format "-~a(%rbp)" n)]
       [`(imm ,value ,_) (format "$~a" value)]))
 
+  (define cond-jump->string
+    (match-lambda
+      ['jump-if-zero "je"]
+      ['jump-if-not-zero "jne"]))
+
+  (define comp-code->string
+    (match-lambda
+      ['equal "e"]
+      ['not-equal "ne"]
+      ['less-than "l"]
+      ['less-or-equal "le"]
+      ['greater-than "g"]
+      ['greater-or-equal "ge"]))
+
+  (define (label->string name)
+    (format "L~a" name))
+
   (define instruction-map
     (hash 'mov "movl"
           'neg "negl"
@@ -439,9 +526,10 @@
           'idiv "idivl"
           'sar "sarl"
           'sal "sall"
-          'and "andl"
-          'xor "xorl"
-          'or "orl"))
+          'cmp "cmpl"
+          'bitwise-and "andl"
+          'bitwise-xor "xorl"
+          'bitwise-or "orl"))
   (define (instruction? i) (dict-has-key? instruction-map i))
   (define (instruction->string i) (dict-ref instruction-map i))
 
@@ -450,6 +538,9 @@
 
   (define (emit-unop op a)
     (printf "    ~a ~a\n" op a))
+
+  (define (emit-label name)
+    (printf "~a:\n" (label->string name)))
 
   (define (emit ast)
     (match ast
@@ -471,6 +562,12 @@
        (display "    ret\n")]
       [`(cdq ,_)
        (display "    cdq\n")]
+      [`(jmp ,where ,_) (emit-unop "jmp" (label->string where))]
+      [`(jmp-cc ,pred ,where ,_)
+       (emit-unop (cond-jump->string pred) (label->string where))]
+      [`(set-cc ,cc ,what ,_)
+       (emit-unop (format "set~a" (comp-code->string cc)) (operand->string what))]
+      [`(label ,name ,_) (emit-label name)]
       [`(,(? instruction? op) ,src ,dst ,_)
        (emit-binop (instruction->string op) (operand->string src) (operand->string dst))]
       [`(,(? instruction? op) ,value ,_)
@@ -480,4 +577,4 @@
 
 
 (module+ main
-  (rcc-compile "programs/return_2.i" 'assemble "programs/return_2.s"))
+  (rcc-compile "programs/return_2.c" 'assemble "programs/return_2.s"))
