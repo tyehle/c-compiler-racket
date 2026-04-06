@@ -4,14 +4,27 @@
 (provide assemble)
 
 
+;; unary? : symbol? -> boolean?
+;; Recognize TACKY unary operators that map directly to x86 instructions.
 (define unary? (contains? 'negate 'complement))
+
+;; standard-binary? : symbol? -> boolean?
+;; Recognize TACKY binary operators that map to a simple two-operand x86 pattern.
 (define standard-binary? (contains? 'add 'subtract 'multiply 'lshift 'rshift 'bitwise-and 'bitwise-xor 'bitwise-or))
+
+;; cond-jump? : symbol? -> boolean?
+;; Recognize conditional jump operators.
 (define cond-jump? (contains? 'jump-if-zero 'jump-if-not-zero))
+
+;; relational? : symbol? -> boolean?
+;; Recognize relational comparison operators.
 (define relational? (contains? 'equal 'not-equal
                                'less-than 'less-or-equal
                                'greater-than 'greater-or-equal))
 
 
+;; convert-instruction-kind : symbol? -> symbol?
+;; Map TACKY operator names to x86 instruction mnemonics.
 (define convert-instruction-kind
   (match-lambda
     ['complement 'not]
@@ -27,6 +40,10 @@
     ['bitwise-or 'bitwise-or]))
 
 
+;; rewrite-operators : any/c -> any/c
+;; Lower TACKY instructions into x86 assembly instructions.
+;; Multi-instruction TACKY ops (divide, remainder, conditionals) are
+;; expanded into sequences; simple ops become mov+op pairs.
 (define rewrite-operators
   (bottom-up (match-lambda
                [`(return ,op ,loc)
@@ -66,11 +83,20 @@
                [x x])))
 
 
+;; Module-level state for stack allocation.
 (define stack-offset 0)
+
+;; next-stack-offset : -> integer?
+;; Allocate the next 4-byte stack slot and return its offset.
 (define (next-stack-offset)
   (set! stack-offset (+ 4 stack-offset))
   stack-offset)
+
 (define var-map (make-hash))
+
+;; replace-vars : any/c -> any/c
+;; Replace all (var name loc) references with (stack offset loc) and
+;; prepend an allocate-stack instruction to each function.
 (define replace-vars
   (bottom-up (match-lambda
                [`(var ,name ,loc)
@@ -83,8 +109,18 @@
                [x x])))
 
 
+;; stack? : any/c -> boolean?
+;; True if the operand is a stack reference.
 (define (stack? op) (equal? 'stack (car op)))
+
+;; imm? : any/c -> boolean?
+;; True if the operand is an immediate value.
 (define (imm? op) (equal? 'imm (car op)))
+
+;; fix-invalid-movs : any/c -> any/c
+;; Rewrite instructions that violate x86 encoding constraints
+;; (e.g. memory-to-memory moves, immediates where not allowed)
+;; by routing through scratch registers R10, R11, or CX.
 (define fix-invalid-movs
   (bottom-up (match-lambda
                ; idiv cannot operate on a constant
@@ -111,5 +147,8 @@
                [x x])))
 
 
+;; assemble : tacky-program? -> asm-program?
+;; Lower TACKY IR to x86 assembly by rewriting operators, allocating
+;; stack slots for variables, and fixing invalid instruction encodings.
 (define (assemble tacky)
   (fix-invalid-movs (replace-vars (rewrite-operators tacky))))

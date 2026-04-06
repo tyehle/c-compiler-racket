@@ -5,6 +5,9 @@
 
 
 
+;; ensure-schema : any/c -> any/c
+;; Validate that value conforms to the expected assembly grammar.
+;; Raises an error if validation fails.
 (define (ensure-schema value)
   (define operand
     (schema-any
@@ -32,13 +35,15 @@
   (check-schema value program err))
 
 
+;; operand->string : operand -> string
+;; Convert an assembly operand node to its x86 string representation.
 (define operand->string
   (match-lambda
     ; typed register. There is only one for now so we can support shifts
     [`(reg CX 1 ,_) "%cl"]
     ; untyped registers
     [`(reg AX ,_) "%eax"]
-    [`(reg CX, _) "%ecx"]
+    [`(reg CX ,_) "%ecx"]
     [`(reg DX ,_) "%edx"]
     [`(reg R10 ,_) "%r10d"]
     [`(reg R11 ,_) "%r11d"]
@@ -46,11 +51,15 @@
     [`(imm ,value ,_) (format "$~a" value)]))
 
 
+;; cond-jump-map : (hash/c symbol? string?)
+;; Map from conditional jump IR names to x86 jump mnemonics.
 (define cond-jump-map
   (hash 'jump-if-zero "je"
         'jump-if-not-zero "jne"))
 
 
+;; comp-code-map : (hash/c symbol? string?)
+;; Map from comparison IR names to x86 condition code suffixes.
 (define comp-code-map
   (hash 'equal "e"
         'not-equal "ne"
@@ -60,17 +69,25 @@
         'greater-or-equal "ge"))
 
 
+;; label->string : string? -> string?
+;; Prefix a label name to form its assembly representation.
 (define (label->string name)
   (format "L~a" name))
 
 
+;; unary-map : (hash/c symbol? string?)
+;; Map from unary IR operation names to x86 mnemonics.
 (define unary-map
   (hash 'neg "negl"
         'not "notl"
         'idiv "idivl"))
+;; unary? : any/c -> boolean?
+;; Recognize unary assembly operation names.
 (define (unary? i) (dict-has-key? unary-map i))
 
 
+;; binary-map : (hash/c symbol? string?)
+;; Map from binary IR operation names to x86 mnemonics.
 (define binary-map
   (hash 'mov "movl"
         'add "addl"
@@ -82,21 +99,31 @@
         'bitwise-and "andl"
         'bitwise-xor "xorl"
         'bitwise-or "orl"))
+;; binary? : any/c -> boolean?
+;; Recognize binary assembly operation names.
 (define (binary? i) (dict-has-key? binary-map i))
 
 
+;; emit-binop : string? string? string? -> void?
+;; Print a two-operand x86 instruction line.
 (define (emit-binop op a b)
   (printf "    ~a ~a, ~a\n" op a b))
 
 
+;; emit-unop : string? string? -> void?
+;; Print a one-operand x86 instruction line.
 (define (emit-unop op a)
   (printf "    ~a ~a\n" op a))
 
 
+;; emit-label : string? -> void?
+;; Print a label definition line.
 (define (emit-label name)
   (printf "~a:\n" (label->string name)))
 
 
+;; emit : assembly-node -> void?
+;; Recursively emit x86 text for an assembly AST node.
 (define (emit ast)
   (match ast
     [`(program ,fn ,_) (emit fn)]
@@ -129,6 +156,8 @@
      (emit-unop (dict-ref unary-map op) (operand->string value))]))
 
 
+;; emit-assembly : assembly-program path-string? -> void?
+;; Validate and write the assembly AST as x86 text to output-file.
 (define (emit-assembly ast output-file)
   (ensure-schema ast)
   (with-output-to-file output-file (λ () (emit ast)) #:exists 'replace))

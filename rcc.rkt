@@ -3,9 +3,15 @@
 
 (require "compile.rkt")
 
+;; mode : (parameter/c symbol?)
+;; The compiler stage to stop at; defaults to a full compile.
 (define mode (make-parameter 'full))
+;; input-file : (parameter/c string?)
+;; Path to the C source file to compile.
 (define input-file (make-parameter "programs/return_2.c"))
 
+;; parse-args : -> void?
+;; Parse command-line flags and set the mode and input-file parameters.
 (define (parse-args)
   (command-line
     #:program "rcc"
@@ -16,6 +22,9 @@
     [("--parse")
       "Convert to parse tree and print"
       (mode 'parse)]
+    [("--validate")
+     "Run semantic analysis and print parse tree"
+     (mode 'validate)]
     [("--tacky")
       "Convert to TACKY IR and print"
       (mode 'tacky)]
@@ -34,12 +43,16 @@
         filename))))
 
 
+;; run : path-string? string? ... -> void?
+;; Run an external command; exit with its code on failure.
 (define (run . cmd)
   (match (apply system*/exit-code cmd)
     [0 (void)]
     [res (exit res)]))
 
 
+;; main : -> void?
+;; Preprocess, compile, and optionally link the input C file.
 (define (main)
   (let* ([executable-file (substring (input-file) 0 (- (string-length (input-file)) 2))]
          [preprocessed-file (string-append executable-file ".i")]
