@@ -55,6 +55,21 @@
                            'lshift 'rshift
                            'bitwise-and 'bitwise-xor 'bitwise-or))
 
+;; assign-op-map : (hash/c symbol? symbol?)
+;; Map from compound assignment operator names to their underlying binary operators.
+(define assign-op-map
+  (hash
+    'add-assign     'add
+    'sub-assign     'subtract
+    'mult-assign    'multiply
+    'div-assign     'divide
+    'rem-assign     'remainder
+    'rshift-assign  'rshift
+    'lshift-assign  'lshift
+    'bit-and-assign 'bitwise-and
+    'bit-or-assign  'bitwise-or
+    'bit-xor-assign 'bitwise-xor))
+
 
 ;; Monotonic counter shared by fresh-tacky-tmp-var and fresh-tacky-label.
 (define next-tacky-var 0)
@@ -83,66 +98,88 @@
 ;;     the statement boundary.
 ;; Short-circuit operators (and/or) are lowered to conditional jumps.
 (define (gen-tacky ast)
+  ;; desugar : ast? -> ast?
+  ;; Rewrite pre-increment/decrement into compound assignment forms.
+  (define desugar
+    (top-down
+      (match-lambda
+        [`(pre-increment ,what ,loc) `(add-assign ,what (int 1 ,loc) ,loc)]
+        [`(pre-decrement ,what ,loc) `(sub-assign ,what (int 1 ,loc) ,loc)]
+        [x x])))
+
   ;; transform : any/c -> any/c
   ;; Rewrite a single AST node into TACKY IR.
   (define transform
-    (match-lambda
-      ;; statements (all of these become lists of instructions)
-      [`(declare ,_ ,_)
-       '()]
-      [`(declare-init ,name (,rhs ,@instructions) ,loc)
-       (reverse
-        `((copy ,rhs (var ,name ,loc) ,loc)
-          ,@instructions))]
-      [`(return (,v ,@instructions) ,loc)
-       (reverse (cons `(return ,v ,loc) instructions))]
-      [`(expression (,_ ,@instructions) ,_)
-       (reverse instructions)]
-      [`(null ,_)
-       '()]
-      ;; expressions (all of these become (cons var instruction-list))
-      [`(var ,name ,loc) (list `(var ,name ,loc))]
-      [`(int ,n ,loc) (list `(imm ,n ,loc))]
-      [`(assign (,lhs) (,rhs ,@instructions) ,loc)
-       #:when (eq? 'var (car lhs))
-       `(,lhs
-         (copy ,rhs ,lhs ,loc)
-         ,@instructions)]
-      [`(and (,fst-val ,@fst) (,snd-val ,@snd) ,loc)
-       (let [(result (fresh-tacky-tmp-var loc))
-             (false-label (fresh-tacky-label 'and_false))
-             (end-label (fresh-tacky-label 'and_end))]
-         `(,result
-           (label ,end-label ,loc)
-           (copy (imm 0 ,loc) ,result ,loc)
-           (label ,false-label ,loc)
-           (jump ,end-label ,loc)
-           (copy (imm 1 ,loc) ,result ,loc)
-           (jump-if-zero ,snd-val ,false-label ,loc)
-           ,@snd
-           (jump-if-zero ,fst-val ,false-label ,loc)
-           ,@fst))]
-      [`(or (,fst-val ,@fst) (,snd-val ,@snd) ,loc)
-       (let [(result (fresh-tacky-tmp-var loc))
-             (true-label (fresh-tacky-label 'or_true))
-             (end-label (fresh-tacky-label 'or_end))]
-         `(,result
-           (label ,end-label ,loc)
-           (copy (imm 1 ,loc) ,result ,loc)
-           (label ,true-label ,loc)
-           (jump ,end-label ,loc)
-           (copy (imm 0 ,loc) ,result ,loc)
-           (jump-if-not-zero ,snd-val ,true-label ,loc)
-           ,@snd
-           (jump-if-not-zero ,fst-val ,true-label ,loc)
-           ,@fst))]
-      [`(,(? unary? kind) (,operand ,@instructions) ,loc)
-       (let* ([dest (fresh-tacky-tmp-var loc)]
-              [instr `(,kind ,operand ,dest ,loc)])
-         (cons dest (cons instr instructions)))]
-      [`(,(? binary? kind) (,a ,@a-instrs) (,b ,@b-instrs) ,loc)
-       (let* ([dest (fresh-tacky-tmp-var loc)]
-              [instr `(,kind ,a ,b ,dest ,loc)])
-         (cons dest (cons instr (append a-instrs b-instrs))))]
-      [x x]))
-  (ensure-schema ((bottom-up transform) ast)))
+    (bottom-up
+     (match-lambda
+       ;; statements (all of these become lists of instructions)
+       [`(declare ,_ ,_)
+        '()]
+       [`(declare-init ,name (,rhs ,@instructions) ,loc)
+        (reverse
+         `((copy ,rhs (var ,name ,loc) ,loc)
+           ,@instructions))]
+       [`(return (,v ,@instructions) ,loc)
+        (reverse (cons `(return ,v ,loc) instructions))]
+       [`(expression (,_ ,@instructions) ,_)
+        (reverse instructions)]
+       [`(null ,_)
+        '()]
+       ;; expressions (all of these become (cons var instruction-list))
+       [`(var ,name ,loc) (list `(var ,name ,loc))]
+       [`(int ,n ,loc) (list `(imm ,n ,loc))]
+       [`(,(and (or 'post-increment 'post-decrement) kind) (,lhs-val ,@lhs) ,loc)
+        (let ([tmp-val (fresh-tacky-tmp-var loc)]
+              [op (if (eq? kind 'post-increment) 'add 'subtract)])
+          `(,tmp-val
+            (,op ,lhs-val (imm 1 ,loc) ,lhs-val ,loc)
+            (copy ,lhs-val ,tmp-val ,loc)
+            ,@lhs))]
+       [`(assign (,lhs-val ,@lhs) (,rhs-val ,@rhs) ,loc)
+        `(,lhs-val
+          (copy ,rhs-val ,lhs-val ,loc)
+          ,@rhs
+          ,@lhs)]
+       [`(,(? (curry hash-has-key? assign-op-map) kind) (,lhs-val ,@lhs) (,rhs-val ,@rhs) ,loc)
+        `(,lhs-val
+          (,(hash-ref assign-op-map kind) ,lhs-val ,rhs-val ,lhs-val ,loc)
+          ,@rhs
+          ,@lhs)]
+       [`(and (,fst-val ,@fst) (,snd-val ,@snd) ,loc)
+        (let [(result (fresh-tacky-tmp-var loc))
+              (false-label (fresh-tacky-label 'and_false))
+              (end-label (fresh-tacky-label 'and_end))]
+          `(,result
+            (label ,end-label ,loc)
+            (copy (imm 0 ,loc) ,result ,loc)
+            (label ,false-label ,loc)
+            (jump ,end-label ,loc)
+            (copy (imm 1 ,loc) ,result ,loc)
+            (jump-if-zero ,snd-val ,false-label ,loc)
+            ,@snd
+            (jump-if-zero ,fst-val ,false-label ,loc)
+            ,@fst))]
+       [`(or (,fst-val ,@fst) (,snd-val ,@snd) ,loc)
+        (let [(result (fresh-tacky-tmp-var loc))
+              (true-label (fresh-tacky-label 'or_true))
+              (end-label (fresh-tacky-label 'or_end))]
+          `(,result
+            (label ,end-label ,loc)
+            (copy (imm 1 ,loc) ,result ,loc)
+            (label ,true-label ,loc)
+            (jump ,end-label ,loc)
+            (copy (imm 0 ,loc) ,result ,loc)
+            (jump-if-not-zero ,snd-val ,true-label ,loc)
+            ,@snd
+            (jump-if-not-zero ,fst-val ,true-label ,loc)
+            ,@fst))]
+       [`(,(? unary? kind) (,operand ,@instructions) ,loc)
+        (let* ([dest (fresh-tacky-tmp-var loc)]
+               [instr `(,kind ,operand ,dest ,loc)])
+          (cons dest (cons instr instructions)))]
+       [`(,(? binary? kind) (,a ,@a-instrs) (,b ,@b-instrs) ,loc)
+        (let* ([dest (fresh-tacky-tmp-var loc)]
+               [instr `(,kind ,a ,b ,dest ,loc)])
+          (cons dest (cons instr (append a-instrs b-instrs))))]
+       [x x])))
+  (ensure-schema (transform (desugar ast))))

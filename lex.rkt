@@ -13,6 +13,10 @@
     (schema-any 'lparen 'rparen 'lbrace 'rbrace 'semicolon
                 'ident 'const
                 'assign
+                'increment 'decrement
+                'add-assign 'sub-assign 'mult-assign 'div-assign 'rem-assign
+                'rshift-assign 'lshift-assign
+                'bit-and-assign 'bit-or-assign 'bit-xor-assign
                 'complement 'not
                 'multiply 'divide 'remainder
                 'add 'negate
@@ -80,6 +84,17 @@
         [(regexp-try-match #px"^[0-9]+\\b" in) => (decode-match 'const start)]
 
         [(regexp-try-match #px"^--" in) => (decode-match 'decrement start)]
+        [(regexp-try-match #px"^\\+\\+" in) => (decode-match 'increment start)]
+        [(regexp-try-match #px"^\\+=" in) => (decode-match 'add-assign start)]
+        [(regexp-try-match #px"^-=" in) => (decode-match 'sub-assign start)]
+        [(regexp-try-match #px"^\\*=" in) => (decode-match 'mult-assign start)]
+        [(regexp-try-match #px"^/=" in) => (decode-match 'div-assign start)]
+        [(regexp-try-match #px"^%=" in) => (decode-match 'rem-assign start)]
+        [(regexp-try-match #px"^>>=" in) => (decode-match 'rshift-assign start)]
+        [(regexp-try-match #px"^<<=" in) => (decode-match 'lshift-assign start)]
+        [(regexp-try-match #px"^&=" in) => (decode-match 'bit-and-assign start)]
+        [(regexp-try-match #px"^\\|=" in) => (decode-match 'bit-or-assign start)]
+        [(regexp-try-match #px"^\\^=" in) => (decode-match 'bit-xor-assign start)]
 
         ; arithmetic operators
         [(regexp-try-match #px"^-" in)   => (decode-match 'negate start)]
