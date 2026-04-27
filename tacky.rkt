@@ -84,7 +84,7 @@
 ;; fresh-tacky-label : symbol? -> string?
 ;; Generate a fresh label name with the given hint prefix.
 (define (fresh-tacky-label hint)
-  (let [(name (format "~a_~a" hint next-tacky-var))]
+  (let [(name (format "~a.~a" hint next-tacky-var))]
     (set! next-tacky-var (add1 next-tacky-var))
     name))
 
@@ -143,6 +143,11 @@
              ,@(reverse body)
              (jump-if-zero ,cond-val ,else-label ,loc)
              ,@cond-instructions)))]
+       [`(goto ,name ,loc)
+        `((jump ,name ,loc))]
+       [`(label ,name ,body ,loc)
+        `((label ,name ,loc)
+          ,@body)]
        ;; expressions (all of these become (cons var instruction-list))
        [`(var ,name ,loc) (list `(var ,name ,loc))]
        [`(int ,n ,loc) (list `(imm ,n ,loc))]

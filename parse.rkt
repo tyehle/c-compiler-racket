@@ -31,18 +31,23 @@
         (list 'conditional expr expr expr span?)
         (list 'var string? span?)
         (list 'int integer? span?))))
-  ;; Schema for block items: either a declaration or a statement.
-  (define block-item
+  ;; Schema for statements
+  (define statement
     (delay
       (schema-any
-       `(declare ,string? ,span?)
-       `(declare-init ,string? ,expr ,span?)
-       ;; statements
        `(return ,expr ,span?)
        `(expression ,expr ,span?)
-       `(if ,expr ,block-item ,span?)
-       `(if-else ,expr ,block-item ,block-item ,span?)
-       `(null ,span?))))
+       `(if ,expr ,statement ,span?)
+       `(if-else ,expr ,statement ,statement ,span?)
+       `(null ,span?)
+       `(goto ,string? ,span?)
+       `(label ,string? ,statement ,span?))))
+  ;; Schema for block items: either a declaration or a statement.
+  (define block-item
+    (schema-any
+     `(declare ,string? ,span?)
+     `(declare-init ,string? ,expr ,span?)
+     statement))
   ;; Schema for the top-level program node.
   (define program
     `(program (function "main" ,(schema-many block-item) ,span?) ,span?))
@@ -83,6 +88,13 @@
              (fail "EOF" msg)
              (cons #f '()))]
     [(and tokens (cons tok _)) (cons tok tokens)]))
+
+;; peek-sequence : integer? [#:eof-error (or/c string? #f)] -> parser<(or/c (listof token?) #f)>
+;; Return the next length tokens without consuming them.
+;; On short input: return #f (default) or raise an error if #:eof-error is provided.
+(define ((peek-sequence length #:eof-error [msg #f]) tokens)
+  (with-handlers ([exn:fail? (λ (_) (if msg (fail "EOF" msg) (cons #f tokens)))])
+    (cons (take tokens length) tokens)))
 
 ;; then : parser<A> (A -> parser<B>) -> parser<B>
 ;; Monadic bind: run parser, pass its result to proc which returns a new parser.
@@ -255,14 +267,23 @@
 ;; parse-statement : parser<statement?>
 ;; Parse a return statement, null statement (bare semicolon), or expression statement.
 (define parse-statement
-  ((peek #:eof-error "Expecting statement but reached end of input") . then .
+  ;; label statements start with an identifier and then a colon, so we need to see two tokens to know
+  ;; if we should parse a label or a regular expression statement.
+  ((peek-sequence 2 #:eof-error "Expecting statement but reached end of input") . then .
    (match-lambda
-     [`(keyword return ,_)
+     [`((keyword return ,_) ,_)
       (map-p (match-lambda [(list start expr end) `(return ,expr ,(join-locs start end))])
              (parse-sequence any-token (parse-expr 0) (expect-kind 'semicolon)))]
-     [`(semicolon ,_ ,loc)
+     [`((semicolon ,_ ,loc) ,_)
       (map-p (const `(null ,loc)) any-token)]
-     [`(keyword if ,_)
+     [`((keyword goto ,_) ,_)
+      (map-p (match-lambda [`(,start (ident ,name ,_) ,end) `(goto ,name ,(join-locs start end))])
+             (parse-sequence any-token (expect-kind 'ident) (expect-kind 'semicolon)))]
+     ;; maybe a labeled statement. Check for a colon
+     [`((ident ,name ,start) (colon ,_ ,_))
+      (map-p (match-lambda [`(,_ ,_ ,stmt) `(label ,name ,stmt ,(join-locs start stmt))])
+             (parse-sequence any-token any-token parse-statement))]
+     [`((keyword if ,_) ,_)
       ((parse-sequence any-token
                        (expect-kind 'lparen)
                        (parse-expr 0)

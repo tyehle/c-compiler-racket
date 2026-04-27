@@ -34,6 +34,39 @@
     'bit-or-assign
     'bit-xor-assign))
 
+;; validate-labels : ast? -> ast?
+;; Check that all labels in each function are unique and all goto targets exist.
+(define (validate-labels ast)
+  ;; labels : (hash/c string? node?)
+  ;; Map from label name to its defining node, for the current function.
+  (define labels (make-hash))
+  ;; gotos : (hash/c string? node?)
+  ;; Map from goto target name to its goto node, for the current function.
+  (define gotos (make-hash))
+
+  ;; transform : ast? -> ast?
+  ;; Walk the tree, collecting labels and gotos, validating at function boundaries.
+  (define transform
+    (bottom-up
+      (match-lambda
+        [(and node `(goto ,name ,_)) (hash-set! gotos name node) node]
+        [(and node `(label ,name ,_ ,loc))
+         ;; ensure no duplicate labels
+         (when (hash-has-key? labels name)
+           (err loc "Duplicate label definition: ~a" name))
+         (hash-set! labels name node)
+         node]
+        [(and func `(function ,_ ,_ ,_))
+         ;; ensure all goto labels exist
+         (for ([(name bad-goto) gotos] #:unless (hash-has-key? labels name))
+           (err (last bad-goto) "Unknown label: ~a" name))
+         (hash-clear! gotos)
+         (hash-clear! labels)
+         func]
+        [x x])))
+
+  (transform ast))
+
 ;; resolve-vars : ast? -> ast?
 ;; Resolve variable references and rename all variables to unique names.
 ;; Checks for duplicate declarations and undeclared variable uses.
@@ -84,4 +117,4 @@
 ;; validate : ast? -> ast?
 ;; Run all semantic analysis passes on the AST.
 (define (validate ast)
-  (resolve-vars ast))
+  (validate-labels (resolve-vars ast)))

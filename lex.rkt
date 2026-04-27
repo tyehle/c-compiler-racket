@@ -27,7 +27,7 @@
                 'question 'colon))
   ;; Recognize keyword token values.
   (define keywd
-    (schema-any 'return 'void 'int 'if 'else))
+    (schema-any 'return 'void 'int 'if 'else 'goto))
   ;; Schema for a single token: either a keyword or a named token.
   (define token
     (schema-any
@@ -51,7 +51,7 @@
   (map
    (match-lambda
      [`(ident ,v ,loc)
-      #:when (member? v '("int" "void" "return" "if" "else"))
+      #:when (member? v '("int" "void" "return" "if" "else" "goto"))
       `(keyword ,(string->symbol v) ,loc)]
      [t t])
    tokens))
