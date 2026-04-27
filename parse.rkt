@@ -28,16 +28,21 @@
       (schema-any
         (list binary expr expr span?)
         (list unary expr span?)
+        (list 'conditional expr expr expr span?)
         (list 'var string? span?)
         (list 'int integer? span?))))
   ;; Schema for block items: either a declaration or a statement.
   (define block-item
-    (schema-any
-      `(declare ,string? ,span?)
-      `(declare-init ,string? ,expr ,span?)
-      `(return ,expr ,span?)
-      `(expression ,expr ,span?)
-      `(null ,span?)))
+    (delay
+      (schema-any
+       `(declare ,string? ,span?)
+       `(declare-init ,string? ,expr ,span?)
+       ;; statements
+       `(return ,expr ,span?)
+       `(expression ,expr ,span?)
+       `(if ,expr ,block-item ,span?)
+       `(if-else ,expr ,block-item ,block-item ,span?)
+       `(null ,span?))))
   ;; Schema for the top-level program node.
   (define program
     `(program (function "main" ,(schema-many block-item) ,span?) ,span?))
@@ -182,6 +187,7 @@
                            'bitwise-or       15
                            'and              10
                            'or               5
+                           'question         3
                            'assign           1
                            'add-assign       1
                            'sub-assign       1
@@ -209,6 +215,11 @@
      'bit-or-assign
      'bit-xor-assign))
 
+  ;; parse-conditional-middle : parser<expr?>
+  ;; Parse the middle operand of a ternary expression, up to and including the colon.
+  (define parse-conditional-middle
+    (map-p car (parse-sequence (parse-expr 0) (expect-kind 'colon))))
+
   ;; valid-operator? : token? -> boolean?
   ;; True if the token is an operator with precedence >= min-prec.
   (define (valid-operator? token)
@@ -223,6 +234,12 @@
                     [(cons right t3) ((parse-expr op-prec) t2)]
                     [new-left `(,kind ,left ,right ,(join-locs left right))])
          ((rec new-left) t3))]
+      [(cons (? valid-operator? `(question ,_ ,_)) t2)
+       (match-let* ([op-prec (hash-ref precedence 'question)]
+                    [(cons middle t3) (parse-conditional-middle t2)]
+                    [(cons right t4) ((parse-expr op-prec) t3)]
+                    [new-left `(conditional ,left ,middle ,right ,(join-locs left right))])
+         ((rec new-left) t4))]
       [(cons (? valid-operator? op-token) t2)
        (match-let* ([`(,op ,_ ,_) op-token]
                     [op-prec (hash-ref precedence op)]
@@ -245,6 +262,22 @@
              (parse-sequence any-token (parse-expr 0) (expect-kind 'semicolon)))]
      [`(semicolon ,_ ,loc)
       (map-p (const `(null ,loc)) any-token)]
+     [`(keyword if ,_)
+      ((parse-sequence any-token
+                       (expect-kind 'lparen)
+                       (parse-expr 0)
+                       (expect-kind 'rparen)
+                       parse-statement
+                       (peek))
+       . then .
+       (match-lambda
+         [`(,keyword ,_ ,expr ,_ ,body (keyword else ,_))
+          (map-p (match-lambda [`(,_ ,else-body)
+                                `(if-else ,expr ,body ,else-body ,(join-locs keyword else-body))])
+                 (parse-sequence any-token parse-statement))]
+         [`(,keyword ,_ ,expr ,_ ,body ,_)
+          (let ([loc (join-locs keyword body)])
+            (return `(if ,expr ,body ,loc)))]))]
      [_
       (map-p (match-lambda [(list e end) `(expression ,e ,(join-locs e end))])
              (parse-sequence (parse-expr 0) (expect-kind 'semicolon)))])))

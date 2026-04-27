@@ -1,5 +1,4 @@
 int main(void) {
     int a = 7;
-    a += ++a;
-    return a;
+    if(a) return 5; else return 3;
 }

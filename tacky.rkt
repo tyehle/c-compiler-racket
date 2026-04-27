@@ -125,6 +125,24 @@
         (reverse instructions)]
        [`(null ,_)
         '()]
+       [`(if (,cond-val ,@cond-instructions) ,body ,loc)
+        (let ([end-label (fresh-tacky-label 'if_end)])
+          (reverse
+           `((label ,end-label ,loc)
+             ,@(reverse body)
+             (jump-if-zero ,cond-val ,end-label ,loc)
+             ,@cond-instructions)))]
+       [`(if-else (,cond-val ,@cond-instructions) ,body ,else-body ,loc)
+        (let ([end-label (fresh-tacky-label 'if_end)]
+              [else-label (fresh-tacky-label 'if_else)])
+          (reverse
+           `((label ,end-label ,loc)
+             ,@(reverse else-body)
+             (label ,else-label ,loc)
+             (jump ,end-label ,loc)
+             ,@(reverse body)
+             (jump-if-zero ,cond-val ,else-label ,loc)
+             ,@cond-instructions)))]
        ;; expressions (all of these become (cons var instruction-list))
        [`(var ,name ,loc) (list `(var ,name ,loc))]
        [`(int ,n ,loc) (list `(imm ,n ,loc))]
@@ -145,6 +163,20 @@
           (,(hash-ref assign-op-map kind) ,lhs-val ,rhs-val ,lhs-val ,loc)
           ,@rhs
           ,@lhs)]
+       [`(conditional (,cond-val ,@cond) (,true-val ,@true) (,false-val ,@false) ,loc)
+        (let ([result (fresh-tacky-tmp-var loc)]
+              [false-label (fresh-tacky-label 'cond_false)]
+              [end-label (fresh-tacky-label 'cond_end)])
+          `(,result
+            (label ,end-label ,loc)
+            (copy ,false-val ,result ,loc)
+            ,@false
+            (label ,false-label ,loc)
+            (jump ,end-label ,loc)
+            (copy ,true-val ,result ,loc)
+            ,@true
+            (jump-if-zero ,cond-val ,false-label ,loc)
+            ,@cond))]
        [`(and (,fst-val ,@fst) (,snd-val ,@snd) ,loc)
         (let [(result (fresh-tacky-tmp-var loc))
               (false-label (fresh-tacky-label 'and_false))

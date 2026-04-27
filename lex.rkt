@@ -23,10 +23,11 @@
                 'lshift 'rshift
                 'less-than 'less-or-equal 'greater-than 'greater-or-equal 'equal 'not-equal
                 'bitwise-and 'bitwise-xor 'bitwise-or
-                'and 'or))
+                'and 'or
+                'question 'colon))
   ;; Recognize keyword token values.
   (define keywd
-    (schema-any 'return 'void 'int))
+    (schema-any 'return 'void 'int 'if 'else))
   ;; Schema for a single token: either a keyword or a named token.
   (define token
     (schema-any
@@ -50,7 +51,7 @@
   (map
    (match-lambda
      [`(ident ,v ,loc)
-      #:when (member? v '("int" "void" "return"))
+      #:when (member? v '("int" "void" "return" "if" "else"))
       `(keyword ,(string->symbol v) ,loc)]
      [t t])
    tokens))
@@ -133,6 +134,10 @@
 
         ; assignment
         [(regexp-try-match #px"^=" in) => (decode-match 'assign start)]
+
+        ; conditional expressions
+        [(regexp-try-match #px"^\\?" in) => (decode-match 'question start)]
+        [(regexp-try-match #px"^:" in) => (decode-match 'colon start)]
 
         [(eq? (peek-char in) eof) '()]
 
