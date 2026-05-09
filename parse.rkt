@@ -39,18 +39,21 @@
        `(expression ,expr ,span?)
        `(if ,expr ,statement ,span?)
        `(if-else ,expr ,statement ,statement ,span?)
+       `(compound ,block ,span?)
        `(null ,span?)
        `(goto ,string? ,span?)
        `(label ,string? ,statement ,span?))))
-  ;; Schema for block items: either a declaration or a statement.
-  (define block-item
-    (schema-any
-     `(declare ,string? ,span?)
-     `(declare-init ,string? ,expr ,span?)
-     statement))
+  ;; Schema for blocks: a sequence of declarations and statements.
+  (define block
+    `(block ,(schema-many
+              (schema-any
+               `(declare ,string? ,span?)
+               `(declare-init ,string? ,expr ,span?)
+               statement))
+            ,span?))
   ;; Schema for the top-level program node.
   (define program
-    `(program (function "main" ,(schema-many block-item) ,span?) ,span?))
+    `(program (function "main" ,block ,span?) ,span?))
   (check-schema value program (schema-error-proc "Invalid parse tree" value))
   value)
 
@@ -283,6 +286,7 @@
      [`((ident ,name ,start) (colon ,_ ,_))
       (map-p (match-lambda [`(,_ ,_ ,stmt) `(label ,name ,stmt ,(join-locs start stmt))])
              (parse-sequence any-token any-token parse-statement))]
+     [`((lbrace ,_ ,_) ,_) (map-p (λ (block) `(compound ,block ,(last block))) parse-block)]
      [`((keyword if ,_) ,_)
       ((parse-sequence any-token
                        (expect-kind 'lparen)
@@ -333,23 +337,26 @@
              (parse-sequence parse-statement parse-block-items))])))
 
 
+(define parse-block
+  (map-p (match-lambda [`(,start ,body ,end) `(block ,body ,(join-locs start end))])
+         (parse-sequence (expect-kind 'lbrace) parse-block-items (expect-kind 'rbrace))))
+
+
 ;; parse-function : parser<function?>
 ;; Parse a function definition: int name(void) { body }.
 (define parse-function
   (map-p
    (match-lambda
-     [`(,start (ident ,name ,_) ,@_..4 ,body ,end)
+     [`(,start (ident ,name ,_) ,_ ,_ ,_ (block ,body ,end))
       (let ([loc (join-locs start end)])
-        `(function ,name ,(append body `((return (int 0 ,loc) ,loc))) ,loc))])
+        `(function ,name (block ,(append body `((return (int 0 ,loc) ,loc))) ,end) ,loc))])
    (parse-sequence
     (expect 'keyword 'int)
     (expect-kind 'ident)
     (expect-kind 'lparen)
     (expect 'keyword 'void)
     (expect-kind 'rparen)
-    (expect-kind 'lbrace)
-    parse-block-items
-    (expect-kind 'rbrace))))
+    parse-block)))
 
 
 ;; parse-program : parser<program?>

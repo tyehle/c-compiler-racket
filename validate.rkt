@@ -48,22 +48,23 @@
   ;; Walk the tree, collecting labels and gotos, validating at function boundaries.
   (define transform
     (bottom-up
-      (match-lambda
-        [(and node `(goto ,name ,_)) (hash-set! gotos name node) node]
-        [(and node `(label ,name ,_ ,loc))
-         ;; ensure no duplicate labels
-         (when (hash-has-key? labels name)
-           (err loc "Duplicate label definition: ~a" name))
-         (hash-set! labels name node)
-         node]
-        [(and func `(function ,_ ,_ ,_))
-         ;; ensure all goto labels exist
-         (for ([(name bad-goto) gotos] #:unless (hash-has-key? labels name))
-           (err (last bad-goto) "Unknown label: ~a" name))
-         (hash-clear! gotos)
-         (hash-clear! labels)
-         func]
-        [x x])))
+     (λ (node)
+       (match node
+         [`(goto ,name ,_) (hash-set! gotos name node) node]
+         [`(label ,name ,_ ,loc)
+          ;; ensure no duplicate labels
+          (when (hash-has-key? labels name)
+            (err loc "Duplicate label definition: ~a" name))
+          (hash-set! labels name node)
+          node]
+         [`(function ,_ ,_ ,_)
+          ;; ensure all goto labels exist
+          (for ([(name bad-goto) gotos] #:unless (hash-has-key? labels name))
+            (err (last bad-goto) "Unknown label: ~a" name))
+          (hash-clear! gotos)
+          (hash-clear! labels)
+          node]
+         [_ node]))))
 
   (transform ast))
 
@@ -77,16 +78,39 @@
   (define (mangle name)
     (set! counter (+ 1 counter))
     (format "~a.v~a" name counter))
-  (define var-map (make-hash))
-  ;; map-name : string? span? -> string?
-  ;; Register a new variable declaration, returning its mangled name.
-  ;; Raises an error if the variable is already declared.
-  (define (map-name name loc)
-    (if (hash-has-key? var-map name)
-        (err loc "Duplicate variable declaration: ~a" name)
-        (let [(mangled (mangle name))]
-          (hash-set! var-map name mangled)
-          mangled)))
+  ;; scope-map : (box/c (listof (hash/c string? string?)))
+  ;; Stack of scopes from innermost to outermost. Each scope maps source-level
+  ;; names to their mangled equivalents.
+  (define scope-map (box (list (hash))))
+  ;; map-name! : string? span? -> string?
+  ;; Register a new variable declaration in the innermost scope, returning its
+  ;; mangled name. Raises an error if the name is already declared in that scope.
+  (define (map-name! name loc)
+    (let ([scope (car (unbox scope-map))]
+          [outer-scopes (cdr (unbox scope-map))])
+      (if (hash-has-key? scope name)
+          (err loc "Duplicate variable declaration: ~a" name)
+          (let ([mangled (mangle name)])
+            (set-box! scope-map (cons (hash-set scope name mangled) outer-scopes))
+            mangled))))
+  ;; lookup-name : string? span? -> string?
+  ;; Resolve a source-level variable name to its mangled name by searching
+  ;; from the innermost scope outward. Raises an error if no scope has a
+  ;; binding for name.
+  (define (lookup-name name loc)
+    (define (go scopes)
+      (match scopes
+        ['() (err loc "Undeclared variable, ~a" name)]
+        [(cons scope outers) (hash-ref scope name (λ () (go outers)))]))
+    (go (unbox scope-map)))
+  ;; push-scope! : -> void?
+  ;; Enter a new empty inner scope.
+  (define (push-scope!)
+    (set-box! scope-map (cons (hash) (unbox scope-map))))
+  ;; pop-scope! : -> void?
+  ;; Discard the innermost scope.
+  (define (pop-scope!)
+    (set-box! scope-map (cdr (unbox scope-map))))
   ;; invalid-assign-lhs? : expr? -> boolean?
   ;; True if expr cannot appear on the left-hand side of an assignment.
   (define invalid-assign-lhs?
@@ -96,22 +120,25 @@
   ;; transform : ast? -> ast?
   ;; Rewrite a single AST node: mangle declarations, resolve variable
   ;; references, and reject invalid assignment targets.
-  ;; Uses a single global variable map — will need scoped maps when we add
-  ;; nested blocks and multiple functions.
   (define transform
-    (match-lambda
-      [`(declare ,name ,loc)
-       `(declare ,(map-name name loc) ,loc)]
-      [`(declare-init ,name ,expr ,loc)
-       `(declare-init ,(map-name name loc) ,expr ,loc)]
-      [`(,(? assign-un-op?) ,(? invalid-assign-lhs? lhs) ,loc)
-       (err loc "Invalid assignment. Cannot assign to ~a expression" (car lhs))]
-      [`(,(? assign-bin-op?) ,(? invalid-assign-lhs? lhs) ,_ ,loc)
-       (err loc "Invalid assignment. Cannot assign to ~a expression" (car lhs))]
-      [`(var ,name ,loc)
-       `(var ,(hash-ref var-map name (λ () (err loc "Undeclared variable, ~a" name))) ,loc)]
-      [x x]))
-  ((top-down transform) ast))
+    (generic-walk
+     (match-lambda
+       [(and node `(block ,_ ,_)) (push-scope!) node]
+       [`(declare ,name ,loc)
+        `(declare ,(map-name! name loc) ,loc)]
+       [`(declare-init ,name ,expr ,loc)
+        `(declare-init ,(map-name! name loc) ,expr ,loc)]
+       [`(,(? assign-un-op?) ,(? invalid-assign-lhs? lhs) ,loc)
+        (err loc "Invalid assignment. Cannot assign to ~a expression" (car lhs))]
+       [`(,(? assign-bin-op?) ,(? invalid-assign-lhs? lhs) ,_ ,loc)
+        (err loc "Invalid assignment. Cannot assign to ~a expression" (car lhs))]
+       [`(var ,name ,loc)
+        `(var ,(lookup-name name loc) ,loc)]
+       [x x])
+     (match-lambda
+       [(and node `(block ,_ ,_)) (pop-scope!) node]
+       [x x])))
+  (transform ast))
 
 
 ;; validate : ast? -> ast?

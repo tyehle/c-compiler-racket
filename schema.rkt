@@ -1,6 +1,6 @@
 #lang racket
 
-; (require "utils.rkt")
+(require "utils.rkt")
 
 (provide check-schema schema-any schema-many schema-error-proc)
 
@@ -48,13 +48,17 @@
 
 ;; check-each-schema : any/c (listof schema?) (any/c schema? -> void?) -> void?
 ;; Try each schema in order; backtrack on failure by replacing err with
-;; a handler that tries the next option.
+;; an escape continuation handler that tries the next option.
 (define (check-each-schema value schemas err)
   (match schemas
     ['() (err value '())]
     [(cons option options)
-     (let ([backtrack-err (lambda (_v _s) (check-each-schema value options err))])
-       (check-schema value option backtrack-err))]))
+     (let/ec escape
+       (check-schema
+        value
+        option
+        (λ (_v _s) (escape
+                    (check-each-schema value options err)))))]))
 
 
 ;; schema-any : schema? ... -> schema?

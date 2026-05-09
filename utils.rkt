@@ -5,7 +5,7 @@
          (struct-out span)
          format-loc join-locs
          member? contains?
-         walk-tree top-down bottom-up)
+         top-down bottom-up generic-walk)
 
 
 ;; Source location spanning from start to stop.
@@ -80,3 +80,11 @@
 ;; Recurse into children before applying fn to each node.
 (define ((bottom-up fn) tree)
   (fn (walk-tree (bottom-up fn) tree)))
+
+
+;; generic-walk : (any/c -> any/c) (any/c -> any/c) -> (any/c -> any/c)
+;; Apply before to each node on the way down and after on the way up.
+;; Generalizes top-down and bottom-up; useful when entering and leaving a
+;; subtree both need to run effects (e.g. push/pop a scope).
+(define ((generic-walk before after) tree)
+  (after (walk-tree (generic-walk before after) (before tree))))

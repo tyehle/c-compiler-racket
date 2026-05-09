@@ -112,6 +112,8 @@
   (define transform
     (bottom-up
      (match-lambda
+       ;; block
+       [`(block ,statements ,_) statements]
        ;; statements (all of these become lists of instructions)
        [`(declare ,_ ,_)
         '()]
@@ -125,6 +127,8 @@
         (reverse instructions)]
        [`(null ,_)
         '()]
+       [`(compound ,block ,_)
+        block]
        [`(if (,cond-val ,@cond-instructions) ,body ,loc)
         (let ([end-label (fresh-tacky-label 'if_end)])
           (reverse
