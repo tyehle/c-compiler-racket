@@ -36,14 +36,14 @@
   ; (debug 'check value (force schema))
   (match (force schema)
     [(? procedure? schema)
-     (if (equal? (procedure-arity schema) 1)
-       (if (schema value) (void) (err value schema))
+     (if (= (procedure-arity schema) 1)
+       (unless (schema value) (err value schema))
        (schema value err))]
     [(? list? schema)
      (cond
-       [(or (not (list? value)) (not (equal? (length value) (length schema)))) (err value schema)]
+       [(or (not (list? value)) (not (= (length value) (length schema)))) (err value schema)]
        [else (for ([s schema] [v value]) (check-schema v s err))])]
-    [schema (if (equal? schema value) (void) (err value schema))]))
+    [schema (unless (equal? schema value) (err value schema))]))
 
 
 ;; check-each-schema : any/c (listof schema?) (any/c schema? -> void?) -> void?

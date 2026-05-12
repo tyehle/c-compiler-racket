@@ -61,11 +61,9 @@
     (run gcc-path "-E" "-P" (input-file) "-o" preprocessed-file)
     (rcc-compile preprocessed-file (mode) assembly-file)
     (delete-file preprocessed-file)
-    (if (eq? (mode) 'full)
-      (begin
-        (run gcc-path assembly-file "-o" executable-file)
-        (delete-file assembly-file))
-      (void))))
+    (when (eq? (mode) 'full)
+      (run gcc-path assembly-file "-o" executable-file)
+      (delete-file assembly-file))))
 
 (module+ main
   (parse-args)

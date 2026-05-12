@@ -84,7 +84,7 @@
 ;; fresh-tacky-label : symbol? -> string?
 ;; Generate a fresh label name with the given hint prefix.
 (define (fresh-tacky-label hint)
-  (let [(name (format "~a.~a" hint next-tacky-var))]
+  (let ([name (format "~a.~a" hint next-tacky-var)])
     (set! next-tacky-var (add1 next-tacky-var))
     name))
 
@@ -187,9 +187,9 @@
             (jump-if-zero ,cond-val ,false-label ,loc)
             ,@cond))]
        [`(and (,fst-val ,@fst) (,snd-val ,@snd) ,loc)
-        (let [(result (fresh-tacky-tmp-var loc))
-              (false-label (fresh-tacky-label 'and_false))
-              (end-label (fresh-tacky-label 'and_end))]
+        (let ([result (fresh-tacky-tmp-var loc)]
+              [false-label (fresh-tacky-label 'and_false)]
+              [end-label (fresh-tacky-label 'and_end)])
           `(,result
             (label ,end-label ,loc)
             (copy (imm 0 ,loc) ,result ,loc)
@@ -201,9 +201,9 @@
             (jump-if-zero ,fst-val ,false-label ,loc)
             ,@fst))]
        [`(or (,fst-val ,@fst) (,snd-val ,@snd) ,loc)
-        (let [(result (fresh-tacky-tmp-var loc))
-              (true-label (fresh-tacky-label 'or_true))
-              (end-label (fresh-tacky-label 'or_end))]
+        (let ([result (fresh-tacky-tmp-var loc)]
+              [true-label (fresh-tacky-label 'or_true)]
+              [end-label (fresh-tacky-label 'or_end)])
           `(,result
             (label ,end-label ,loc)
             (copy (imm 1 ,loc) ,result ,loc)
