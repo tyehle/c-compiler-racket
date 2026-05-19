@@ -102,7 +102,7 @@
          [`(for ,init ,control ,final ,body #f ,loc)
           (let ([name (fresh-loop-label!)])
             (cons name `(for ,init ,control ,final ,body ,name ,loc)))]
-         [x (cons context x)]))))
+         [_ (cons context node)]))))
 
   (transform ast))
 
@@ -116,68 +116,54 @@
   (define (mangle name)
     (set! counter (+ 1 counter))
     (format "~a.v~a" name counter))
-  ;; scope-map : (box/c (listof (hash/c string? string?)))
-  ;; Stack of scopes from innermost to outermost. Each scope maps source-level
-  ;; names to their mangled equivalents.
-  (define scope-map (box (list (hash))))
+
   ;; map-name! : string? span? -> string?
   ;; Register a new variable declaration in the innermost scope, returning its
   ;; mangled name. Raises an error if the name is already declared in that scope.
-  (define (map-name! name loc)
-    (let ([scope (car (unbox scope-map))]
-          [outer-scopes (cdr (unbox scope-map))])
-      (if (hash-has-key? scope name)
-          (err loc "Duplicate variable declaration: ~a" name)
-          (let ([mangled (mangle name)])
-            (set-box! scope-map (cons (hash-set scope name mangled) outer-scopes))
-            mangled))))
+  (define (map-name! scope name loc)
+    (if (hash-has-key? scope name)
+        (err loc "Duplicate variable declaration: ~a" name)
+        (let ([mangled (mangle name)])
+          (hash-set! scope name mangled)
+          mangled)))
   ;; lookup-name : string? span? -> string?
   ;; Resolve a source-level variable name to its mangled name by searching
   ;; from the innermost scope outward. Raises an error if no scope has a
   ;; binding for name.
-  (define (lookup-name name loc)
-    (define (go scopes)
-      (match scopes
-        ['() (err loc "Undeclared variable, ~a" name)]
-        [(cons scope outers) (hash-ref scope name (λ () (go outers)))]))
-    (go (unbox scope-map)))
-  ;; push-scope! : -> void?
-  ;; Enter a new empty inner scope.
-  (define (push-scope!)
-    (set-box! scope-map (cons (hash) (unbox scope-map))))
-  ;; pop-scope! : -> void?
-  ;; Discard the innermost scope.
-  (define (pop-scope!)
-    (set-box! scope-map (cdr (unbox scope-map))))
+  (define (lookup-name scopes name loc)
+    (match scopes
+      ['() (err loc "Undeclared variable: ~a" name)]
+      [(cons scope outers) (hash-ref scope name (λ () (lookup-name outers name loc)))]))
+
   ;; invalid-assign-lhs? : expr? -> boolean?
   ;; True if expr cannot appear on the left-hand side of an assignment.
   (define invalid-assign-lhs?
     (match-lambda
       [`(var ,_ ,_) #f]
       [_ #t]))
+
   ;; transform : ast? -> ast?
   ;; Rewrite a single AST node: mangle declarations, resolve variable
   ;; references, and reject invalid assignment targets.
   (define transform
-    (generic-walk
-     (match-lambda
-       [(and node `(block ,@_)) (push-scope!) node]
-       [(and node `(for ,@_)) (push-scope!) node]
-       [`(declare ,name ,loc)
-        `(declare ,(map-name! name loc) ,loc)]
-       [`(declare-init ,name ,expr ,loc)
-        `(declare-init ,(map-name! name loc) ,expr ,loc)]
-       [`(,(? assign-un-op?) ,(? invalid-assign-lhs? lhs) ,loc)
-        (err loc "Invalid assignment. Cannot assign to ~a expression" (car lhs))]
-       [`(,(? assign-bin-op?) ,(? invalid-assign-lhs? lhs) ,_ ,loc)
-        (err loc "Invalid assignment. Cannot assign to ~a expression" (car lhs))]
-       [`(var ,name ,loc)
-        `(var ,(lookup-name name loc) ,loc)]
-       [x x])
-     (match-lambda
-       [(and node `(block ,@_)) (pop-scope!) node]
-       [(and node `(for ,@_)) (pop-scope!) node]
-       [x x])))
+    (contextual-top-down
+     '()
+     (λ (context node)
+       (match node
+         [(or `(block ,@_) `(for ,@_))
+          (cons (cons (make-hash) context) node)]
+         [`(declare ,name ,loc)
+          (cons context `(declare ,(map-name! (car context) name loc) ,loc))]
+         [`(declare-init ,name ,expr ,loc)
+          (cons context `(declare-init ,(map-name! (car context) name loc) ,expr ,loc))]
+         [`(,(? assign-un-op?) ,(? invalid-assign-lhs? lhs) ,loc)
+          (err loc "Invalid assignment. Cannot assign to ~a expression" (car lhs))]
+         [`(,(? assign-bin-op?) ,(? invalid-assign-lhs? lhs) ,_ ,loc)
+          (err loc "Invalid assignment. Cannot assign to ~a expression" (car lhs))]
+         [`(var ,name ,loc)
+          (cons context `(var ,(lookup-name context name loc) ,loc))]
+         [_ (cons context node)]))))
+
   (transform ast))
 
 

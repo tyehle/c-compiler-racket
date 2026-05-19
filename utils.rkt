@@ -5,7 +5,7 @@
          (struct-out span)
          format-loc join-locs
          member? contains?
-         top-down bottom-up contextual-top-down generic-walk)
+         top-down bottom-up contextual-top-down)
 
 
 ;; Source location spanning from start to stop.
@@ -69,6 +69,15 @@
     [(? list?) (splice-nodes (map fn tree))]
     [x x]))
 
+;; contextual-top-down : C (C T -> (cons C T)) -> (T -> T)
+;; where C and T are unconstrained — any value may serve as the context and
+;; any value as the tree.
+;; Top-down walk that threads a context down the tree. fn receives the current
+;; context and node, and returns (cons new-context new-node): the new context
+;; is passed to fn for the children, and the new node replaces the original.
+;; Each subtree is walked with the context produced by its parent's call, so
+;; updates only propagate downward — sibling subtrees do not see each other's
+;; context changes.
 (define ((contextual-top-down context fn) tree)
   (match-let ([(cons new-context new-tree) (fn context tree)])
     (walk-tree (contextual-top-down new-context fn) new-tree)))
