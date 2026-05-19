@@ -77,20 +77,45 @@
 ;; fresh-tacky-tmp-var : span? -> operand?
 ;; Generate a fresh temporary variable operand.
 (define (fresh-tacky-tmp-var loc)
-  (let ([name (format "fresh.t~a" next-tacky-var)])
-    (set! next-tacky-var (add1 next-tacky-var))
-    `(var ,name ,loc)))
+  (set! next-tacky-var (add1 next-tacky-var))
+  `(var ,(format "fresh.t~a" next-tacky-var) ,loc))
 
 ;; fresh-tacky-label : symbol? -> string?
 ;; Generate a fresh label name with the given hint prefix.
 (define (fresh-tacky-label hint)
-  (let ([name (format "~a.~a" hint next-tacky-var)])
-    (set! next-tacky-var (add1 next-tacky-var))
-    name))
+  (set! next-tacky-var (add1 next-tacky-var))
+  (format "~a.t~a" hint next-tacky-var))
 
+;; desugar : ast? -> ast?
+;; Pre-lowering rewrites on the parse AST:
+;;   - Fold (negate (int n _) loc) into the literal (int (- n) loc).
+;;   - Rewrite pre-increment/decrement into the corresponding compound
+;;     assignment (add-assign / sub-assign).
+;; Runs bottom-up so that folds propagate through nested forms (e.g. --n).
+(define desugar
+  (bottom-up
+    (match-lambda
+      [`(negate (int ,n ,_) ,loc) `(int ,(- n) ,loc)]
+      [`(pre-increment ,what ,loc) `(add-assign ,what (int 1 ,loc) ,loc)]
+      [`(pre-decrement ,what ,loc) `(sub-assign ,what (int 1 ,loc) ,loc)]
+      [x x])))
+
+;; peephole : (listof instruction?) -> (listof instruction?)
+;; Post-lowering cleanup on the TACKY instruction stream. Currently simplifies
+;; conditional jumps with constant operands: a jump-if-zero of a known-zero
+;; immediate becomes an unconditional jump, and a jump-if-zero of a known-
+;; nonzero immediate is dropped (the symmetric cases for jump-if-not-zero).
+(define peephole
+  (bottom-up
+    (match-lambda
+      [`(jump-if-zero (imm ,n ,_) ,where ,loc) (if (= n 0) `(jump ,where ,loc) '())]
+      [`(jump-if-not-zero (imm ,n ,_) ,where ,loc) (if (= n 0) '() `(jump ,where ,loc))]
+      [x x])))
 
 ;; gen-tacky : ast? -> tacky-program?
-;; Lower a validated parse AST into TACKY IR using a bottom-up tree walk.
+;; Lower a validated parse AST into TACKY IR. Runs three bottom-up passes:
+;; desugar (syntactic rewrites and constant folding), transform (the main
+;; lowering), and peephole (instruction-level cleanup).
 ;; The transform rewrites nodes in two conventions:
 ;;   - Statements become flat lists of instructions (in forward order).
 ;;   - Expressions become (cons result-operand reversed-instructions),
@@ -98,15 +123,6 @@
 ;;     the statement boundary.
 ;; Short-circuit operators (and/or) are lowered to conditional jumps.
 (define (gen-tacky ast)
-  ;; desugar : ast? -> ast?
-  ;; Rewrite pre-increment/decrement into compound assignment forms.
-  (define desugar
-    (top-down
-      (match-lambda
-        [`(pre-increment ,what ,loc) `(add-assign ,what (int 1 ,loc) ,loc)]
-        [`(pre-decrement ,what ,loc) `(sub-assign ,what (int 1 ,loc) ,loc)]
-        [x x])))
-
   ;; transform : any/c -> any/c
   ;; Rewrite a single AST node into TACKY IR.
   (define transform
@@ -118,11 +134,11 @@
        [`(declare ,_ ,_)
         '()]
        [`(declare-init ,name (,rhs ,@instructions) ,loc)
-        (reverse
-         `((copy ,rhs (var ,name ,loc) ,loc)
-           ,@instructions))]
+        `(,@(reverse instructions)
+          (copy ,rhs (var ,name ,loc) ,loc))]
        [`(return (,v ,@instructions) ,loc)
-        (reverse (cons `(return ,v ,loc) instructions))]
+        `(,@(reverse instructions)
+          (return ,v ,loc))]
        [`(expression (,_ ,@instructions) ,_)
         (reverse instructions)]
        [`(null ,_)
@@ -131,22 +147,56 @@
         block]
        [`(if (,cond-val ,@cond-instructions) ,body ,loc)
         (let ([end-label (fresh-tacky-label 'if_end)])
-          (reverse
-           `((label ,end-label ,loc)
-             ,@(reverse body)
-             (jump-if-zero ,cond-val ,end-label ,loc)
-             ,@cond-instructions)))]
+          `(,@(reverse cond-instructions)
+            (jump-if-zero ,cond-val ,end-label ,loc)
+            ,@body
+            (label ,end-label ,loc)))]
        [`(if-else (,cond-val ,@cond-instructions) ,body ,else-body ,loc)
         (let ([end-label (fresh-tacky-label 'if_end)]
               [else-label (fresh-tacky-label 'if_else)])
-          (reverse
-           `((label ,end-label ,loc)
-             ,@(reverse else-body)
-             (label ,else-label ,loc)
-             (jump ,end-label ,loc)
-             ,@(reverse body)
-             (jump-if-zero ,cond-val ,else-label ,loc)
-             ,@cond-instructions)))]
+          `(,@(reverse cond-instructions)
+            (jump-if-zero ,cond-val ,else-label ,loc)
+            ,@body
+            (jump ,end-label ,loc)
+            (label ,else-label ,loc)
+            ,@else-body
+            (label ,end-label ,loc)))]
+       [`(break ,name ,loc)
+        `((jump ,(format "~a.end" name) ,loc))]
+       [`(continue ,name ,loc)
+        `((jump ,(format "~a.continue" name) ,loc))]
+       [`(do-while ,body (,cond-val ,@cond-instructions) ,name ,loc)
+        (let ([start-label name]
+              [continue-label (format "~a.continue" name)]
+              [end-label (format "~a.end" name)])
+          `((label ,start-label ,loc)
+            ,@body
+            (label ,continue-label ,loc)
+            ,@(reverse cond-instructions)
+            (jump-if-not-zero ,cond-val ,start-label ,loc)
+            (label ,end-label ,loc)))]
+       [`(while (,cond-val ,@cond-instructions) ,body ,name ,loc)
+        (let ([continue-label (format "~a.continue" name)]
+              [end-label (format "~a.end" name)])
+          `((label ,continue-label ,loc)
+            ,@(reverse cond-instructions)
+            (jump-if-zero ,cond-val ,end-label ,loc)
+            ,@body
+            (jump ,continue-label ,loc)
+            (label ,end-label ,loc)))]
+       [`(for ,init (,cond-val ,@cond-instructions) ,final ,body ,name ,loc)
+        (let ([start-label name]
+              [continue-label (format "~a.continue" name)]
+              [end-label (format "~a.end" name)])
+          `(,@init
+            (label ,start-label ,loc)
+            ,@(reverse cond-instructions)
+            (jump-if-zero ,cond-val ,end-label ,loc)
+            ,@body
+            (label ,continue-label ,loc)
+            ,@final
+            (jump ,start-label ,loc)
+            (label ,end-label ,loc)))]
        [`(goto ,name ,loc)
         `((jump ,name ,loc))]
        [`(label ,name ,body ,loc)
@@ -223,4 +273,4 @@
                [instr `(,kind ,a ,b ,dest ,loc)])
           (cons dest (cons instr (append a-instrs b-instrs))))]
        [x x])))
-  (ensure-schema (transform (desugar ast))))
+  (ensure-schema (peephole (transform (desugar ast)))))

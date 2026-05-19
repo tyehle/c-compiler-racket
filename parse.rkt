@@ -40,16 +40,24 @@
        `(if ,expr ,statement ,span?)
        `(if-else ,expr ,statement ,statement ,span?)
        `(compound ,block ,span?)
+       `(break #f ,span?)
+       `(continue #f ,span?)
+       `(while ,expr ,statement #f ,span?)
+       `(do-while ,statement ,expr #f ,span?)
+       `(for ,block-item ,expr ,statement ,statement #f ,span?)
        `(null ,span?)
        `(goto ,string? ,span?)
        `(label ,string? ,statement ,span?))))
+  ;; Schema for declarations
+  (define declaration
+    (schema-any
+     `(declare ,string? ,span?)
+     `(declare-init ,string? ,expr ,span?)))
+  ;; for loop init statement
+  (define block-item (schema-any declaration statement))
   ;; Schema for blocks: a sequence of declarations and statements.
   (define block
-    `(block ,(schema-many
-              (schema-any
-               `(declare ,string? ,span?)
-               `(declare-init ,string? ,expr ,span?)
-               statement))
+    `(block ,(schema-many block-item)
             ,span?))
   ;; Schema for the top-level program node.
   (define program
@@ -145,7 +153,8 @@
 ;; parse-postfix : expr? -> parser<expr?>
 ;; Consume any postfix increment/decrement operators following a parsed expression.
 (define (parse-postfix factor)
-  ((peek) . then .
+  ((peek)
+   . then .
    (match-lambda
      [`(,(and kind (or 'increment 'decrement)) ,_ ,end-loc)
       (let ([node `(,(prefix "post-" kind) ,factor ,(join-locs (last factor) end-loc))])
@@ -156,7 +165,8 @@
 ;; parse-factor : parser<expr?>
 ;; Parse a primary expression: integer literal, variable, unary op, or parenthesized expression.
 (define parse-factor
-  ((any-token . then .
+  ((any-token
+   . then .
    (match-lambda
      [`(const ,value ,loc)
       (return `(int ,(string->number value) ,loc))]
@@ -267,12 +277,50 @@
     ((rec left) t2)))
 
 
+;; parse-for-init : parser<(or/c declaration? statement?)>
+;; Parse the initializer clause of a for loop. Consumes the trailing semicolon.
+;; Returns a declaration when the clause begins with `int`, a null statement
+;; when the clause is empty, or an expression statement otherwise.
+(define parse-for-init
+  ((peek)
+   . then .
+   (match-lambda
+     [`(keyword int ,_) parse-declaration]
+     [`(semicolon ,_ ,loc) (map-p (const `(null ,loc)) any-token)]
+     [_ (map-p (match-lambda [`(,expr ,end) `(expression ,expr ,(join-locs expr end))])
+               (parse-sequence (parse-expr 0) (expect-kind 'semicolon)))])))
+
+;; parse-for-control : parser<expr?>
+;; Parse the loop-condition clause of a for loop. Consumes the trailing semicolon.
+;; Returns the parsed expression, or the constant 1 if the clause is empty.
+(define parse-for-control
+  ((peek)
+   . then .
+   (match-lambda
+     [`(semicolon ,_ ,loc) (map-p (const `(int 1 ,loc)) any-token)]
+     [_ (map-p first (parse-sequence (parse-expr 0) (expect-kind 'semicolon)))])))
+
+;; parse-for-final : parser<statement?>
+;; Parse the post-iteration clause of a for loop. Does NOT consume the closing
+;; paren — the caller handles that. Returns a null statement if the clause is
+;; empty, or an expression statement wrapping the parsed expression.
+(define parse-for-final
+  ((peek)
+   . then .
+   (match-lambda
+     [`(rparen ,_ ,loc) (return `(null ,loc))]
+     [_ (map-p (λ (expr) `(expression ,expr ,(last expr)))
+               (parse-expr 0))])))
+
 ;; parse-statement : parser<statement?>
-;; Parse a return statement, null statement (bare semicolon), or expression statement.
+;; Parse one C statement. Dispatches on the leading token(s) to handle:
+;; return, null (`;`), goto, labeled statements (`ident :`), compound blocks,
+;; break, continue, while, do-while, for, if/if-else, and expression statements.
 (define parse-statement
   ;; label statements start with an identifier and then a colon, so we need to see two tokens to know
   ;; if we should parse a label or a regular expression statement.
-  ((peek-sequence 2 #:eof-error "Expecting statement but reached end of input") . then .
+  ((peek-sequence 2 #:eof-error "Expecting statement but reached end of input")
+   . then .
    (match-lambda
      [`((keyword return ,_) ,_)
       (map-p (match-lambda [(list start expr end) `(return ,expr ,(join-locs start end))])
@@ -287,6 +335,40 @@
       (map-p (match-lambda [`(,_ ,_ ,stmt) `(label ,name ,stmt ,(join-locs start stmt))])
              (parse-sequence any-token any-token parse-statement))]
      [`((lbrace ,_ ,_) ,_) (map-p (λ (block) `(compound ,block ,(last block))) parse-block)]
+     [`((keyword break ,loc) ,_)
+      (map-p (const `(break #f ,loc))
+             (parse-sequence any-token (expect-kind 'semicolon)))]
+     [`((keyword continue ,loc) ,_)
+      (map-p (const `(continue #f ,loc))
+             (parse-sequence any-token (expect-kind 'semicolon)))]
+     [`((keyword while ,_) ,_)
+      (map-p (match-lambda [`(,start ,_ ,condition ,_ ,body)
+                            `(while ,condition ,body #f ,(join-locs start body))])
+             (parse-sequence any-token
+                             (expect-kind 'lparen)
+                             (parse-expr 0)
+                             (expect-kind 'rparen)
+                             parse-statement))]
+     [`((keyword do ,_) ,_)
+      (map-p (match-lambda [`(,start ,body ,_ ,_ ,condition ,_ ,end)
+                            `(do-while ,body ,condition #f ,(join-locs start end))])
+             (parse-sequence any-token
+                             parse-statement
+                             (expect 'keyword 'while)
+                             (expect-kind 'lparen)
+                             (parse-expr 0)
+                             (expect-kind 'rparen)
+                             (expect-kind 'semicolon)))]
+     [`((keyword for ,_) ,_)
+      (map-p (match-lambda [`(,start ,_ ,initial ,control ,final ,_ ,body)
+                            `(for ,initial ,control ,final ,body #f ,(join-locs start body))])
+             (parse-sequence any-token
+                             (expect-kind 'lparen)
+                             parse-for-init
+                             parse-for-control
+                             parse-for-final
+                             (expect-kind 'rparen)
+                             parse-statement))]
      [`((keyword if ,_) ,_)
       ((parse-sequence any-token
                        (expect-kind 'lparen)
@@ -311,7 +393,8 @@
 ;; parse-declaration : parser<declaration?>
 ;; Parse a variable declaration, with or without an initializer.
 (define parse-declaration
-  ((parse-sequence (expect 'keyword 'int) (expect-kind 'ident) any-token) . then .
+  ((parse-sequence (expect 'keyword 'int) (expect-kind 'ident) any-token)
+   . then .
    (match-lambda
      [`(,start (ident ,name ,_) (semicolon ,_ ,end))
       (return `(declare ,name ,(join-locs start end)))]
@@ -325,7 +408,8 @@
 ;; parse-block-items : parser<(listof block-item?)>
 ;; Recursively parse block items until a closing brace is reached.
 (define parse-block-items
-  ((peek #:eof-error "Expecting statement or } but reached end of input") . then .
+  ((peek #:eof-error "Expecting statement or } but reached end of input")
+   . then .
    (match-lambda
      [`(rbrace ,_ ,_)
       (return '())]
@@ -337,6 +421,8 @@
              (parse-sequence parse-statement parse-block-items))])))
 
 
+;; parse-block : parser<block?>
+;; Parse a brace-delimited block: { item ... }.
 (define parse-block
   (map-p (match-lambda [`(,start ,body ,end) `(block ,body ,(join-locs start end))])
          (parse-sequence (expect-kind 'lbrace) parse-block-items (expect-kind 'rbrace))))

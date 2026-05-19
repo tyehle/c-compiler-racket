@@ -15,5 +15,21 @@ parse path: (partial-compile "--parse" path)
 codegen path: (partial-compile "--codegen" path)
 assemble path: (partial-compile "--assemble" path)
 
-test chapter stage="run":
-    arch -x86_64 zsh -c './writing-a-c-compiler-tests/test_compiler --verbose ./rcc.rkt --bitwise --compound --increment --goto --chapter={{chapter}} --stage={{stage}}'
+test-latest chapter stage="run": (test chapter stage "--latest-only --failfast")
+
+test chapter stage="run" extra_args="":
+    #!/usr/bin/env zsh
+    set -euo pipefail
+    extra_credit='--bitwise --compound --increment --goto'
+    cmd="raco make rcc.rkt && ./writing-a-c-compiler-tests/test_compiler \
+        --verbose {{extra_args}} $extra_credit \
+        --chapter={{chapter}} --stage={{stage}} \
+        ./rcc.rkt"
+    if [[ "{{stage}}" == "run" ]]
+    then
+        set -x
+        arch -x86_64 zsh -c "$cmd"
+    else
+        set -x
+        eval "$cmd"
+    fi

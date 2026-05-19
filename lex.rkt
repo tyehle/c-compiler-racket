@@ -3,6 +3,8 @@
 (require "utils.rkt" "schema.rkt")
 (provide lex)
 
+(define keywords
+  '(int void return if else goto do while for break continue))
 
 ;; ensure-schema : any/c -> any/c
 ;; Validate that value is a well-formed token list.
@@ -27,7 +29,7 @@
                 'question 'colon))
   ;; Recognize keyword token values.
   (define keywd
-    (schema-any 'return 'void 'int 'if 'else 'goto))
+    (apply schema-any keywords))
   ;; Schema for a single token: either a keyword or a named token.
   (define token
     (schema-any
@@ -51,7 +53,7 @@
   (map
    (match-lambda
      [`(ident ,v ,loc)
-      #:when (member? v '("int" "void" "return" "if" "else" "goto"))
+      #:when (member? (string->symbol v) keywords)
       `(keyword ,(string->symbol v) ,loc)]
      [t t])
    tokens))

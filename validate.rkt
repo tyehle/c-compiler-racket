@@ -68,6 +68,44 @@
 
   (transform ast))
 
+;; label-loops : ast? -> ast?
+;; Assign a unique label to each loop and rewrite the placeholder #f slot on
+;; every break/continue to its enclosing loop's label. Raises an error on a
+;; break or continue that has no enclosing loop. Threads the current loop
+;; label as the walker's context, so nested loops correctly shadow.
+(define (label-loops ast)
+  (define counter 0)
+  ;; fresh-loop-label! : -> string?
+  ;; Generate a fresh loop label.
+  (define (fresh-loop-label!)
+    (set! counter (+ 1 counter))
+    (format "loop.v~a" counter))
+  (define transform
+    (contextual-top-down
+     #f
+     (λ (context node)
+       (match node
+         [`(break #f ,loc)
+          (if (not context)
+              (err loc "Break statement outside of loop or switch context")
+              (cons context `(break ,context ,loc)))]
+         [`(continue #f ,loc)
+          (if (not context)
+              (err loc "Continue statement outside of loop context")
+              (cons context `(continue ,context ,loc)))]
+         [`(while ,condition ,body #f ,loc)
+          (let ([name (fresh-loop-label!)])
+            (cons name `(while ,condition ,body ,name ,loc)))]
+         [`(do-while ,body ,condition #f ,loc)
+          (let ([name (fresh-loop-label!)])
+            (cons name `(do-while ,body ,condition ,name ,loc)))]
+         [`(for ,init ,control ,final ,body #f ,loc)
+          (let ([name (fresh-loop-label!)])
+            (cons name `(for ,init ,control ,final ,body ,name ,loc)))]
+         [x (cons context x)]))))
+
+  (transform ast))
+
 ;; resolve-vars : ast? -> ast?
 ;; Resolve variable references and rename all variables to unique names.
 ;; Checks for duplicate declarations and undeclared variable uses.
@@ -123,7 +161,8 @@
   (define transform
     (generic-walk
      (match-lambda
-       [(and node `(block ,_ ,_)) (push-scope!) node]
+       [(and node `(block ,@_)) (push-scope!) node]
+       [(and node `(for ,@_)) (push-scope!) node]
        [`(declare ,name ,loc)
         `(declare ,(map-name! name loc) ,loc)]
        [`(declare-init ,name ,expr ,loc)
@@ -136,7 +175,8 @@
         `(var ,(lookup-name name loc) ,loc)]
        [x x])
      (match-lambda
-       [(and node `(block ,_ ,_)) (pop-scope!) node]
+       [(and node `(block ,@_)) (pop-scope!) node]
+       [(and node `(for ,@_)) (pop-scope!) node]
        [x x])))
   (transform ast))
 
@@ -144,4 +184,4 @@
 ;; validate : ast? -> ast?
 ;; Run all semantic analysis passes on the AST.
 (define (validate ast)
-  (validate-labels (resolve-vars ast)))
+  (validate-labels (label-loops (resolve-vars ast))))

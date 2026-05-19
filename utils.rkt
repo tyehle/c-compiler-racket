@@ -5,7 +5,7 @@
          (struct-out span)
          format-loc join-locs
          member? contains?
-         top-down bottom-up generic-walk)
+         top-down bottom-up contextual-top-down generic-walk)
 
 
 ;; Source location spanning from start to stop.
@@ -68,6 +68,10 @@
     [`(,(? symbol? kind) ,@vs) `(,kind ,@(map fn vs))]
     [(? list?) (splice-nodes (map fn tree))]
     [x x]))
+
+(define ((contextual-top-down context fn) tree)
+  (match-let ([(cons new-context new-tree) (fn context tree)])
+    (walk-tree (contextual-top-down new-context fn) new-tree)))
 
 
 ;; top-down : (any/c -> any/c) -> (any/c -> any/c)
