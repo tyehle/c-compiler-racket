@@ -17,9 +17,9 @@
 
 (define ((schema-error-proc message value) bad-value schm)
   (raise-user-error 'schema-error
-                    "~a: ~v doesn't match\n~a\nin\n~a"
+                    "~a:\n~a\ndoesn't match\n~a\nin\n~a"
                     message
-                    bad-value
+                    (pretty-format bad-value)
                     (pretty-format schm)
                     (pretty-format value)))
 

@@ -40,11 +40,14 @@
        `(if ,expr ,statement ,span?)
        `(if-else ,expr ,statement ,statement ,span?)
        `(compound ,block ,span?)
-       `(break #f ,span?)
-       `(continue #f ,span?)
-       `(while ,expr ,statement #f ,span?)
-       `(do-while ,statement ,expr #f ,span?)
-       `(for ,block-item ,expr ,statement ,statement #f ,span?)
+       `(break ,span?)
+       `(continue ,span?)
+       `(while ,expr ,statement ,span?)
+       `(do-while ,statement ,expr ,span?)
+       `(for ,block-item ,expr ,statement ,statement ,span?)
+       `(switch ,expr ,statement ,span?)
+       `(case ,expr ,statement ,span?)
+       `(default ,statement ,span?)
        `(null ,span?)
        `(goto ,string? ,span?)
        `(label ,string? ,statement ,span?))))
@@ -336,14 +339,14 @@
              (parse-sequence any-token any-token parse-statement))]
      [`((lbrace ,_ ,_) ,_) (map-p (λ (block) `(compound ,block ,(last block))) parse-block)]
      [`((keyword break ,loc) ,_)
-      (map-p (const `(break #f ,loc))
+      (map-p (const `(break ,loc))
              (parse-sequence any-token (expect-kind 'semicolon)))]
      [`((keyword continue ,loc) ,_)
-      (map-p (const `(continue #f ,loc))
+      (map-p (const `(continue ,loc))
              (parse-sequence any-token (expect-kind 'semicolon)))]
      [`((keyword while ,_) ,_)
       (map-p (match-lambda [`(,start ,_ ,condition ,_ ,body)
-                            `(while ,condition ,body #f ,(join-locs start body))])
+                            `(while ,condition ,body ,(join-locs start body))])
              (parse-sequence any-token
                              (expect-kind 'lparen)
                              (parse-expr 0)
@@ -351,7 +354,7 @@
                              parse-statement))]
      [`((keyword do ,_) ,_)
       (map-p (match-lambda [`(,start ,body ,_ ,_ ,condition ,_ ,end)
-                            `(do-while ,body ,condition #f ,(join-locs start end))])
+                            `(do-while ,body ,condition ,(join-locs start end))])
              (parse-sequence any-token
                              parse-statement
                              (expect 'keyword 'while)
@@ -361,7 +364,7 @@
                              (expect-kind 'semicolon)))]
      [`((keyword for ,_) ,_)
       (map-p (match-lambda [`(,start ,_ ,initial ,control ,final ,_ ,body)
-                            `(for ,initial ,control ,final ,body #f ,(join-locs start body))])
+                            `(for ,initial ,control ,final ,body ,(join-locs start body))])
              (parse-sequence any-token
                              (expect-kind 'lparen)
                              parse-for-init
@@ -369,6 +372,20 @@
                              parse-for-final
                              (expect-kind 'rparen)
                              parse-statement))]
+     [`((keyword switch ,_) ,_)
+      (map-p (match-lambda [`(,start ,_ ,value ,_ ,body)
+                            `(switch ,value ,body ,(join-locs start body))])
+             (parse-sequence any-token
+                             (expect-kind 'lparen)
+                             (parse-expr 0)
+                             (expect-kind 'rparen)
+                             parse-statement))]
+     [`((keyword case ,_) ,_)
+      (map-p (match-lambda [`(,start ,value ,_ ,body) `(case ,value ,body ,(join-locs start body))])
+             (parse-sequence any-token (parse-expr 0) (expect-kind 'colon) parse-statement))]
+     [`((keyword default ,_) ,_)
+      (map-p (match-lambda [`(,start ,_ ,body) `(default ,body ,(join-locs start body))])
+             (parse-sequence any-token (expect-kind 'colon) parse-statement))]
      [`((keyword if ,_) ,_)
       ((parse-sequence any-token
                        (expect-kind 'lparen)
@@ -454,12 +471,15 @@
 
 
 ;; rename-subtract : ast? -> ast?
-;; Rewrite (negate a b loc) to (subtract a b loc) throughout the tree,
-;; distinguishing binary subtraction from unary negation.
+;; - Rewrite (negate a b loc) to (subtract a b loc) throughout the tree,
+;;   distinguishing binary subtraction from unary negation.
+;; - Fold (negate (int n)) to (int -n)
 (define rename-subtract
-  (bottom-up (match-lambda
-               [`(negate ,a ,b ,loc) `(subtract ,a ,b ,loc)]
-               [x x])))
+  (bottom-up
+   (match-lambda
+     [`(negate ,a ,b ,loc) `(subtract ,a ,b ,loc)]
+     [`(negate (int ,n ,_) ,loc) `(int ,(- n) ,loc)]
+     [x x])))
 
 
 ;; parse : (listof token?) -> program?

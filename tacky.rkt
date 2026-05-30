@@ -88,14 +88,11 @@
 
 ;; desugar : ast? -> ast?
 ;; Pre-lowering rewrites on the parse AST:
-;;   - Fold (negate (int n _) loc) into the literal (int (- n) loc).
 ;;   - Rewrite pre-increment/decrement into the corresponding compound
 ;;     assignment (add-assign / sub-assign).
-;; Runs bottom-up so that folds propagate through nested forms (e.g. --n).
 (define desugar
   (bottom-up
     (match-lambda
-      [`(negate (int ,n ,_) ,loc) `(int ,(- n) ,loc)]
       [`(pre-increment ,what ,loc) `(add-assign ,what (int 1 ,loc) ,loc)]
       [`(pre-decrement ,what ,loc) `(sub-assign ,what (int 1 ,loc) ,loc)]
       [x x])))
@@ -196,6 +193,23 @@
             (label ,continue-label ,loc)
             ,@final
             (jump ,start-label ,loc)
+            (label ,end-label ,loc)))]
+       [`(case ,body ,name ,loc)
+        `((label ,name ,loc)
+          ,@body)]
+       [`(switch (,which-val ,@which-instructions) ,body ,name ,table ,loc)
+        (let* ([tmp (fresh-tacky-tmp-var loc)]
+               [end-label (format "~a.end" name)]
+               [case-jumps (append-map
+                            (match-lambda
+                              [(cons 'default _) '()]
+                              [(cons n where) `((subtract ,which-val (imm ,n ,loc) ,tmp ,loc)
+                                                (jump-if-zero ,tmp ,where ,loc))])
+                            (hash->list table))])
+          `(,@(reverse which-instructions)
+            ,@case-jumps
+            (jump ,(hash-ref table 'default end-label) ,loc)
+            ,@body
             (label ,end-label ,loc)))]
        [`(goto ,name ,loc)
         `((jump ,name ,loc))]

@@ -4,7 +4,7 @@
 (provide lex)
 
 (define keywords
-  '(int void return if else goto do while for break continue))
+  '(int void return if else goto do while for break continue switch case default))
 
 ;; ensure-schema : any/c -> any/c
 ;; Validate that value is a well-formed token list.
