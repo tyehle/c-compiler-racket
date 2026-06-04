@@ -1,38 +1,6 @@
 #lang racket
 
-(require "utils.rkt" "schema.rkt")
-(provide emit-assembly)
-
-
-
-;; ensure-schema : any/c -> any/c
-;; Validate that value conforms to the expected assembly grammar.
-;; Raises an error if validation fails.
-(define (ensure-schema value)
-  (define operand
-    (schema-any
-      (list 'reg symbol? span?)
-      (list 'reg symbol? integer? span?)
-      (list 'stack integer? span?)
-      (list 'imm integer? span?)))
-  (define (cond-jump? cj) (dict-has-key? cond-jump-map cj))
-  (define (comp-code? cc) (dict-has-key? comp-code-map cc))
-  (define instruction
-    (schema-any
-      (list binary? operand operand span?)
-      (list unary? operand span?)
-      (list 'allocate-stack integer? span?)
-      (list 'ret span?)
-      (list 'cdq span?)
-      (list 'jmp string? span?)
-      (list 'jmp-cc cond-jump? string? span?)
-      (list 'set-cc comp-code? operand span?)
-      (list 'label string? span?)))
-  (define program
-    `(program (function "main" ,(schema-many instruction) ,span?) ,span?))
-  (define (err bad-value schema)
-    (raise-user-error 'invalid-assembly "~v doesn't match ~v in ~v" bad-value schema value))
-  (check-schema value program err))
+(provide emit-x86)
 
 
 ;; operand->string : operand -> string
@@ -156,8 +124,7 @@
      (emit-unop (dict-ref unary-map op) (operand->string value))]))
 
 
-;; emit-assembly : assembly-program path-string? -> void?
+;; emit-x86 : assembly-program path-string? -> void?
 ;; Validate and write the assembly AST as x86 text to output-file.
-(define (emit-assembly ast output-file)
-  (ensure-schema ast)
+(define (emit-x86 ast output-file)
   (with-output-to-file output-file (λ () (emit ast)) #:exists 'replace))

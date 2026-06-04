@@ -1,7 +1,56 @@
 #lang racket
 
-(require "utils.rkt")
-(provide assemble)
+(require "utils.rkt" "schema.rkt")
+(provide assemble-x86)
+
+
+;; ensure-schema : ast? -> ast?
+;; Validate that value conforms to the expected x86 assembly grammar.
+;; Returns value unchanged, or raises an error if validation fails.
+(define (ensure-schema value)
+  ;; unary : schema?
+  ;; Single-operand x86 instructions (bitwise NOT, two's-complement negation,
+  ;; signed division).
+  (define unary (schema-any 'idiv 'not 'neg))
+  ;; binary : schema?
+  ;; Two-operand x86 instructions.
+  (define binary (schema-any 'add 'sub 'imul
+                             'sal 'sar 'bitwise-and 'bitwise-xor 'bitwise-or
+                             'mov 'cmp))
+  ;; relational : schema?
+  ;; Comparison-result names used as set-cc conditions.
+  (define relational (schema-any 'equal 'not-equal
+                                 'less-than 'less-or-equal 'greater-than 'greater-or-equal))
+  ;; register : schema?
+  ;; The x86 register names this pass emits.
+  (define register (schema-any 'AX 'DX 'R10 'R11 'CX))
+  ;; operand : schema?
+  ;; An assembly operand: immediate, stack slot, or register. The 4-element
+  ;; reg form carries a byte width (e.g. (reg CX 1 loc) for %cl).
+  (define operand
+    (schema-any
+      `(imm ,integer? ,span?)
+      `(stack ,integer? ,span?)
+      `(reg ,register ,span?)
+      `(reg ,register ,integer? ,span?)))
+  ;; instruction : schema?
+  ;; A single x86 assembly instruction.
+  (define instruction
+    (schema-any
+      `(,(schema-any 'ret 'cdq) ,span?)
+      `(,unary ,operand ,span?)
+      `(,binary ,operand ,operand ,span?)
+      `(jmp-cc ,(schema-any 'jump-if-zero 'jump-if-not-zero) ,string? ,span?)
+      `(set-cc ,relational ,operand ,span?)
+      `(,(schema-any 'label 'jmp) ,string? ,span?)
+      `(allocate-stack ,integer? ,span?)))
+  ;; program : schema?
+  ;; Schema for the lowered x86 assembly program.
+  (define program
+    `(program (function "main" ,(schema-many instruction) ,span?) ,span?))
+
+  (check-schema value program (schema-error-proc "Invalid assembly" value))
+  value)
 
 
 ;; unary? : symbol? -> boolean?
@@ -48,7 +97,7 @@
   (bottom-up (match-lambda
                [`(return ,op ,loc)
                 `((mov ,op (reg AX ,loc) ,loc)
-                  (ret, loc))]
+                  (ret ,loc))]
                [`(divide ,a ,b ,dst ,loc)
                 `((mov ,a (reg AX ,loc) ,loc)
                   (cdq ,loc)
@@ -83,30 +132,32 @@
                [x x])))
 
 
-;; Module-level state for stack allocation.
-(define stack-offset 0)
-
-;; next-stack-offset : -> integer?
-;; Allocate the next 4-byte stack slot and return its offset.
-(define (next-stack-offset)
-  (set! stack-offset (+ 4 stack-offset))
-  stack-offset)
-
-(define var-map (make-hash))
-
 ;; replace-vars : any/c -> any/c
 ;; Replace all (var name loc) references with (stack offset loc) and
 ;; prepend an allocate-stack instruction to each function.
-(define replace-vars
-  (bottom-up (match-lambda
-               [`(var ,name ,loc)
-                (let ([offset (hash-ref! var-map name next-stack-offset)])
-                  `(stack ,offset ,loc))]
-               [`(function ,name ,is ,loc)
-                (let ([final-offset stack-offset])
-                  (set! stack-offset 0)
-                  `(function ,name ((allocate-stack ,final-offset ,loc) ,@is) ,loc))]
-               [x x])))
+(define (replace-vars ast)
+  (define stack-offset 0)
+  ;; next-stack-offset : -> integer?
+  ;; Allocate the next 4-byte stack slot and return its offset.
+  (define (next-stack-offset)
+    (set! stack-offset (+ 4 stack-offset))
+    stack-offset)
+
+  (define var-map (make-hash))
+
+  (define transform
+    (bottom-up
+     (match-lambda
+       [`(var ,name ,loc)
+        (let ([offset (hash-ref! var-map name next-stack-offset)])
+          `(stack ,offset ,loc))]
+       [`(function ,name ,is ,loc)
+        (let ([final-offset stack-offset])
+          (set! stack-offset 0)
+          `(function ,name ((allocate-stack ,final-offset ,loc) ,@is) ,loc))]
+       [x x])))
+
+  (transform ast))
 
 
 ;; stack? : any/c -> boolean?
@@ -147,8 +198,8 @@
                [x x])))
 
 
-;; assemble : tacky-program? -> asm-program?
+;; assemble-x86 : tacky-program? -> asm-program?
 ;; Lower TACKY IR to x86 assembly by rewriting operators, allocating
 ;; stack slots for variables, and fixing invalid instruction encodings.
-(define (assemble tacky)
-  (fix-invalid-movs (replace-vars (rewrite-operators tacky))))
+(define (assemble-x86 tacky)
+  (ensure-schema (fix-invalid-movs (replace-vars (rewrite-operators tacky)))))
