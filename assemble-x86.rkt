@@ -115,10 +115,6 @@
                 `((cmp ,right ,left ,loc)
                   (mov (imm 0 ,loc) ,dst ,loc)
                   (set-cc ,kind ,dst ,loc))]
-               [`(not ,src ,dst ,loc)
-                `((cmp (imm 0 ,loc) ,src ,loc)
-                  (mov (imm 0 ,loc) ,dst ,loc)
-                  (set-cc equal ,dst ,loc))]
                [`(jump ,where ,loc)
                 `(jmp ,where ,loc)]
                [`(copy ,src ,dst ,loc)

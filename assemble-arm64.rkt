@@ -8,9 +8,10 @@
 ;; Validate that value conforms to the expected arm64 assembly grammar.
 ;; Returns value unchanged, or raises an error if validation fails.
 (define (ensure-schema value)
-  (define op2 (schema-any 'neg 'mvn 'mov 'str 'ldr))
+  (define op2 (schema-any 'neg 'mvn 'mov 'str 'ldr 'cmp))
   (define op3 (schema-any 'add 'sub 'mul 'sdiv 'lsl 'asr 'and 'orr 'eor))
   (define register (schema-any 'W0 'W9 'W10 'W11))
+  (define cond-code (schema-any 'eq 'ne 'lt 'le 'gt 'ge))
   (define operand
     (schema-any
       `(reg ,register ,span?)
@@ -23,7 +24,9 @@
       `(,op2 ,operand ,operand ,span?)
       `(,op3 ,operand ,operand ,operand ,span?)
       `(msub ,operand ,operand ,operand ,operand ,span?)
-      ; `(,(schema-any 'label 'jmp) ,string? ,span?)
+      `(cset ,operand ,cond-code ,span?)
+      `(,(schema-any 'label 'b) ,string? ,span?)
+      `(,(schema-any 'cbz 'cbnz) ,operand ,string? ,span?)
       `(allocate-stack ,integer? ,span?)))
 
   ;; program : schema?
@@ -38,6 +41,24 @@
 ;; Raise an assembler error with a source location and formatted message.
 (define (err loc . msg)
   (raise-user-error 'error "~a: assembler: ~a" (format-loc loc) (apply format msg)))
+
+(define (cond-jump? op) (hash-has-key? cond-jump-map op))
+(define cond-jump-map
+  (hash
+    'jump-if-zero 'cbz
+    'jump-if-not-zero 'cbnz))
+
+;; relational? : symbol? -> boolean?
+;; Recognize relational comparison operators.
+(define (relational? code) (hash-has-key? relational-map code))
+(define relational-map
+  (hash
+    'equal 'eq
+    'not-equal 'ne
+    'less-than 'lt
+    'less-or-equal 'le
+    'greater-than 'gt
+    'greater-or-equal 'ge))
 
 ;; unary? : symbol? -> boolean?
 ;; Recognize TACKY unary operators that map directly to arm64 instructions.
@@ -67,6 +88,9 @@
 (define rewrite-operators
   (bottom-up
     (match-lambda
+      ;; reverse arg order for copies for arm assembly binary tree
+      [`(copy ,src ,dst ,loc)
+       `(copy ,dst ,src ,loc)]
       [`(return ,op ,loc)
        `((copy (reg W0 ,loc) ,op ,loc)
          (ret ,loc))]
@@ -76,6 +100,17 @@
          (sdiv (reg W11 ,loc) (reg W9 ,loc) (reg W10 ,loc) ,loc)
          (msub (reg W9 ,loc) (reg W11 ,loc) (reg W10 ,loc) (reg W9 ,loc) ,loc)
          (copy ,dst (reg W9 ,loc) ,loc))]
+      [`(,(? cond-jump? op) ,what ,where ,loc)
+       `((copy (reg W9 ,loc) ,what ,loc)
+         (,(hash-ref cond-jump-map op) (reg W9 ,loc) ,where ,loc))]
+      [`(,(? relational? kind) ,a ,b ,dst ,loc)
+       `((copy (reg W9 ,loc) ,a ,loc)
+         (copy (reg W10 ,loc) ,b ,loc)
+         (cmp (reg W9 ,loc) (reg W10 ,loc) ,loc)
+         (cset (reg W9 ,loc) ,(hash-ref relational-map kind) ,loc)
+         (copy ,dst (reg W9 ,loc) ,loc))]
+      [`(jump ,where ,loc)
+       `(b ,where ,loc)]
       [`(,(? unary? kind) ,src ,dst ,loc)
        `((copy (reg W9 ,loc) ,src ,loc)
          (,(hash-ref unary-map kind) (reg W9 ,loc) (reg W9 ,loc) ,loc)
@@ -115,6 +150,7 @@
 
   (transform ast))
 
+(define (imm? node) (eq? (car node) 'imm))
 (define (reg? node) (eq? (car node) 'reg))
 (define (stack? node) (eq? (car node) 'stack))
 (define rewrite-copies
@@ -123,6 +159,8 @@
       [`(copy ,(? reg? dst) ,(? stack? src) ,loc) `(ldr ,dst ,src ,loc)]
       [`(copy ,(? reg? dst) ,src ,loc) `(mov ,dst ,src ,loc)]
       [`(copy ,(? stack? dst) ,(? reg? src) ,loc) `(str ,src ,dst ,loc)]
+      (`(copy ,(? stack? dst) ,(? imm? src) ,loc) `((mov (reg W9 ,loc) ,src ,loc)
+                                                    (str (reg W9 ,loc) ,dst ,loc)))
       [`(copy ,dst ,src ,loc) (err loc "Invalid copy: ~a <- ~a" dst src)]
       [x x])))
 

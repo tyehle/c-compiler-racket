@@ -10,7 +10,7 @@
 (define (ensure-schema value)
   ;; unary : schema?
   ;; Unary instruction operators.
-  (define unary (schema-any 'negate 'complement 'not 'copy))
+  (define unary (schema-any 'negate 'complement 'copy))
   ;; binary : schema?
   ;; Binary instruction operators.
   (define binary (schema-any 'add 'subtract 'multiply 'divide 'remainder
@@ -45,7 +45,7 @@
 
 ;; unary? : symbol? -> boolean?
 ;; Recognize unary operators in the parse AST.
-(define unary? (contains? 'negate 'complement 'not))
+(define unary? (contains? 'negate 'complement))
 ;; binary? : symbol? -> boolean?
 ;; Recognize binary operators in the parse AST.
 (define binary? (contains? 'add 'subtract 'multiply 'divide 'remainder
@@ -95,6 +95,7 @@
     (match-lambda
       [`(pre-increment ,what ,loc) `(add-assign ,what (int 1 ,loc) ,loc)]
       [`(pre-decrement ,what ,loc) `(sub-assign ,what (int 1 ,loc) ,loc)]
+      [`(not ,what ,loc) `(equal ,what (int 0 ,loc) ,loc)]
       [x x])))
 
 ;; peephole : (listof instruction?) -> (listof instruction?)

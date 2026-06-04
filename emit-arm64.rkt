@@ -2,7 +2,11 @@
 
 (require racket/format)
 
+(require "utils.rkt")
 (provide emit-arm64)
+
+
+(define (label->string name) (format "L~a" name))
 
 ;; operand->string : operand -> string
 ;; Convert an assembly operand node to its x86 string representation.
@@ -38,6 +42,14 @@
      (emit-op 'mov "sp" "x29")
      (emit-op 'ldp "x29" "x30" "[sp]" "#16")
      (emit-op 'ret)]
+    [`(label ,name ,_)
+     (printf "~a:\n" (label->string name))]
+    [`(b ,where ,_)
+     (emit-op 'b (label->string where))]
+    [`(,(? (contains? 'cbz 'cbnz) cond-jump) ,src ,where ,_)
+     (emit-op cond-jump (operand->string src) (label->string where))]
+    [`(cset ,dst ,code ,_)
+     (emit-op 'cset (operand->string dst) code)]
     [`(,op ,dst ,src ,_)
      (emit-op op (operand->string dst) (operand->string src))]
     [`(,op ,dst ,a ,b ,_)
