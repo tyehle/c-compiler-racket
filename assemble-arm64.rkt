@@ -25,6 +25,7 @@
       `(,op3 ,operand ,operand ,operand ,span?)
       `(msub ,operand ,operand ,operand ,operand ,span?)
       `(cset ,operand ,cond-code ,span?)
+      `(movk ,operand ,operand lsl ,integer? ,span?)
       `(,(schema-any 'label 'b) ,string? ,span?)
       `(,(schema-any 'cbz 'cbnz) ,operand ,string? ,span?)
       `(allocate-stack ,integer? ,span?)))
@@ -159,10 +160,21 @@
       [`(copy ,(? reg? dst) ,(? stack? src) ,loc) `(ldr ,dst ,src ,loc)]
       [`(copy ,(? reg? dst) ,src ,loc) `(mov ,dst ,src ,loc)]
       [`(copy ,(? stack? dst) ,(? reg? src) ,loc) `(str ,src ,dst ,loc)]
-      (`(copy ,(? stack? dst) ,(? imm? src) ,loc) `((mov (reg W9 ,loc) ,src ,loc)
-                                                    (str (reg W9 ,loc) ,dst ,loc)))
+      [`(copy ,(? stack? dst) ,(? imm? src) ,loc) `((mov (reg W9 ,loc) ,src ,loc)
+                                                    (str (reg W9 ,loc) ,dst ,loc))]
+      [`(copy ,(? stack? dst) ,(? stack? src) ,loc) `((ldr (reg W9 ,loc) ,src ,loc)
+                                                      (str (reg W9 ,loc) ,dst ,loc))]
       [`(copy ,dst ,src ,loc) (err loc "Invalid copy: ~a <- ~a" dst src)]
       [x x])))
 
+(define fix-large-immediate
+  (bottom-up
+    (match-lambda
+      [`(mov ,dst (imm ,n ,iloc) ,loc)
+       #:when (or (< n -65536) (> n 65535))
+       `((mov ,dst (imm ,(bitwise-and #xFFFF n) ,iloc) ,loc)
+         (movk ,dst (imm ,(bitwise-and #xFFFF (arithmetic-shift n -16)) ,iloc) lsl ,16 ,loc))]
+      [x x])))
+
 (define (assemble-arm64 tacky)
-  (ensure-schema (rewrite-copies (replace-vars (rewrite-operators tacky)))))
+  (ensure-schema (fix-large-immediate (rewrite-copies (replace-vars (rewrite-operators tacky))))))

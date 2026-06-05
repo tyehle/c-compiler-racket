@@ -9,7 +9,7 @@
 (define (label->string name) (format "L~a" name))
 
 ;; operand->string : operand -> string
-;; Convert an assembly operand node to its x86 string representation.
+;; Convert an assembly operand node to its arm64 string representation.
 (define operand->string
   (match-lambda
     ; untyped registers
@@ -50,6 +50,8 @@
      (emit-op cond-jump (operand->string src) (label->string where))]
     [`(cset ,dst ,code ,_)
      (emit-op 'cset (operand->string dst) code)]
+    [`(movk ,dst ,src ,mode ,shift ,_)
+     (emit-op 'movk (operand->string dst) (operand->string src) (format "~a #~a" mode shift))]
     [`(,op ,dst ,src ,_)
      (emit-op op (operand->string dst) (operand->string src))]
     [`(,op ,dst ,a ,b ,_)
@@ -59,6 +61,6 @@
     [x x]))
 
 ;; emit-arm64 : assembly-program path-string? -> void?
-;; Validate and write the assembly AST as x86 text to output-file.
+;; Write the assembly AST as arm64 text to output-file.
 (define (emit-arm64 ast output-file)
   (with-output-to-file output-file (λ () (emit ast)) #:exists 'replace))
